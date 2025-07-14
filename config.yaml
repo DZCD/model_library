@@ -1,0 +1,64 @@
+# =================
+# 全局配置
+# =================
+
+model:
+  0:
+    model_name: "elevator_motor"
+    model_path: "weight/elevator_motor.pt"    # 摩托车入电梯
+    classes: [0]
+    imgsz: 1  # 1 代表模型采用原图大小
+
+  1:
+    model_name: "fire_lane_blockage"
+    classes: [0]
+    model_path: "weight/fire_lane_blockage.pt"  # 消防通道占用
+    time_threshold: 60  # 消防通道占用时间阈值
+    imgsz: 1  # 1 代表模型采用原图大小
+
+  2:
+    model_name: "fire_detect"
+    model_path: "weight/fire_detect.pt"    # 火点检测
+    classes: [0]
+    imgsz: 1  # 1 代表模型采用原图大小
+
+
+  3:
+    model_name: "accident"
+    model_path: "weight/yolo_accident_obb.pt"    # 事故检测
+    classes: [0]
+    config: 0.6
+    time_step: 60  # 消息推送的间隔
+    imgsz: 1  # 1 代表模型采用原图大小
+
+
+  4:
+    model_name: "license plate"
+    model_path: "weight/yolo_license_plate.pt"    # 车牌检测
+    ocr_model_path: "weight/plate_rec_color.pth"    # 车牌ocr
+    config: 0.3
+    classes: [0,1]
+    imgsz: 0  # 0 代表模型不采用原图大小
+
+  5:
+    model_name: "car"
+    model_path: "weight/yolo11n.pt"    # 车牌检测
+    config: 0.5
+    classes: [2,5,7]
+    imgsz: 0  # 0 代表模型不采用原图大小
+
+
+mqtt:
+  host: "10.5.52.56"
+  port: 1884
+  username: "admin"
+  password: "zkyy@2024"
+  client-id: "zkyy123"
+
+
+minio:
+  endpoint: "113.105.137.161"
+  port: 10019
+  access-key: "zkyy"
+  secret-key: "Zkyy2021"
+  bucket: "cloud-bucket"
