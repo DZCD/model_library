@@ -55,7 +55,9 @@ class Reasoner:
             yolo_result = model.detect_image(image,conf=model_conf,classes=classes,imgsz=imgsz,verbose=verbose)
         else:
             yolo_result = model.detect_image(image,conf=conf,classes=classes,imgsz=imgsz,verbose=verbose)
-
-        infer_msg = model.post_process(yolo_result)
+        if model_index == 5:
+            infer_msg = model.post_process_hbb_to_obb(yolo_result)
+        else:
+            infer_msg = model.post_process(yolo_result)
         return infer_msg
 
