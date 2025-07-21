@@ -27,7 +27,7 @@ model:
     model_name: "accident"
     model_path: "weight/yolo_accident_obb.pt"    # 事故检测
     classes: [0]
-    config: 0.6
+    config: 0.7
     time_step: 60  # 消息推送的间隔
     imgsz: 1  # 1 代表模型采用原图大小
 
@@ -42,9 +42,9 @@ model:
 
   5:
     model_name: "car"
-    model_path: "weight/yolo11n.pt"    # 车牌检测
+    model_path: "weight/yolo_visdrone.pt"    # 车牌检测
     config: 0.5
-    classes: [2,5,7]
+    classes: [3,4,5,8]
     imgsz: 0  # 0 代表模型不采用原图大小
 
 
