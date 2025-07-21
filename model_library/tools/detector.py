@@ -2,26 +2,28 @@
 import cv2
 import asyncio
 from datetime import datetime
+from collections import defaultdict
 
 from ..model.base_model import BaseModel
 from ..model.track_fireland import TrackFireland
 from ..model.track_accident import TrackAccident
 from ..tools.utils import Config
-from collections import defaultdict
 from ..client.mqtt_client import MQTTClient
 from ..client.minio_client import MinioClient
 
 
 class Detector:
-    def __init__(self, model_index: int, video_path: str, pixel_position: list = None):
+    def __init__(self, model_index: int, video_path: str, pixel_position: list = None,task_id:str=None):
         self.model_index = model_index
         self.video_path = video_path
+        self.task_id = task_id
         self.pixel_position = pixel_position
         self.config = Config()
         self.mqtt_client = MQTTClient()
         self.mqtt_client.connect()
         self.minio_client = MinioClient()
         self.model_name = self.config.model_list[self.model_index]['model_name']
+        self.model_conf = self.config.model_list[self.model_index].get("config",0.5)
         self.classes = self.config.model_list[self.model_index].get('classes', [0])
         self.time_step = self.config.model_list[self.model_index].get('time_step', 60)  # 推送间隔
         self.topic = self.get_topic()
@@ -49,17 +51,17 @@ class Detector:
         datetime_str = current_timestamp.strftime("%Y-%m-%d_%H-%M-%S")  # 精确到秒
         topic_name = f"{datetime_str}-{self.model_name}"
         return topic_name
-    
+
     def request_stop(self):
         """请求停止workflow"""
         self._should_stop = True
         self._stop_event.set()
         print(f"Workflow停止请求已发送")
-    
+
     def is_stop_requested(self):
         """检查是否收到停止请求"""
         return self._should_stop
-    
+
     async def check_stop(self):
         """异步检查停止请求"""
         if self._should_stop:
@@ -67,10 +69,9 @@ class Detector:
             return True
         return False
 
-
     async def run_video(self):
         # 获取视频FPS
-        max_retries = 3 # 最大重试次数
+        max_retries = 3  # 最大重试次数
         current_retry = 0
         while current_retry <= max_retries:
             try:
@@ -79,14 +80,15 @@ class Detector:
                     cap.release()
                     raise Exception(f"无法连接到视频流: {self.video_path}")
                 fps = cap.get(cv2.CAP_PROP_FPS)
-                vid_stride = int(fps/2)  # 每秒推理2帧
-                vid_stride  = vid_stride if vid_stride>0 else 1
+                # vid_stride = int(fps / 2)  # 每秒推理2帧
+                vid_stride = int(fps / fps)  # todo这里直接定义死，每隔两面推理，正式场景要修改
+                vid_stride = vid_stride if vid_stride > 0 else 1
                 width, height = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
                 cap.release()
                 break
             except Exception as e:
                 print(f"视频流处理失败 (尝试 {current_retry}/{max_retries}): {str(e)}")
-                current_retry +=1
+                current_retry += 1
                 if current_retry <= max_retries:
                     print(f"等待 {3} 秒后重试...")
                     await asyncio.sleep(3)
@@ -96,15 +98,16 @@ class Detector:
                     raise e
 
         if self.model_index == 1:
-            results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, imgsz=(height, width),verbose=False)
+            results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, imgsz=(height, width),
+                                             verbose=False,conf=self.model_conf)
         elif self.model_index == 3:
-            results = self.model.track_video(self.video_path, stream=True,vid_stride=vid_stride, classes=self.classes, imgsz=(height, width),verbose=False)
+            results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, classes=self.classes,
+                                             imgsz=(height, width), verbose=False,conf=self.model_conf)
         else:
             # results = self.model.detect_video(self.video_path, stream=True, vid_stride=vid_stride,
             #                                   imgsz=(height, width),verbose=False)
-            results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride,imgsz=(height, width),verbose=False)
-        current_timestamp = datetime.now()
-        date_str = current_timestamp.strftime("%Y-%m-%d")
+            results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, imgsz=(height, width),
+                                             verbose=False,conf=self.model_conf)
         if self.model_index == 1:
             # 消防通道占用
             track_records = defaultdict(lambda: {'first_seen': None, 'last_seen': None, 'violation': False})
@@ -117,11 +120,13 @@ class Detector:
             frame_count = 0
 
             for result in results:
+                current_timestamp = datetime.now()
+                date_str = current_timestamp.strftime("%Y-%m-%d")
                 # 检查停止请求
                 if await self.check_stop():
                     print("模型1：收到停止请求，退出推理循环")
                     return
-                
+
                 ori_img_shape = result.orig_shape
                 frame_count += 1
                 current_time = frame_count * vid_stride / fps  # 当前视频时间（秒）
@@ -193,60 +198,31 @@ class Detector:
                 if await self.check_stop():
                     print("模型3：收到停止请求，退出推理循环")
                     return
-                
-                if len(result) ==0:
+
+                if len(result) == 0:
                     continue
                 frame_count += 1
 
                 # 后处理检测结果
                 results_list = self.model.post_process([result])
+
                 ori_img_shape = result.orig_shape
                 if not results_list:
                     continue
 
                 for result_item in results_list:
+                    current_timestamp = datetime.now()
+                    date_str = current_timestamp.strftime("%Y-%m-%d")
+                    timestamp_str = current_timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")
+
                     id = result_item.get('track_id', None)
+                    if id in accdent_id:
+                        print("同一事件，不重复上报")
                     if id not in accdent_id:
+                        print(f"检测到新事件 事件{id}")
                         object_name = f"ai/{date_str}/{self.model_name}/{current_timestamp}_{id}.jpg"
                         print(object_name)
                         accdent_id.append(id)
-                        infer_image = result.plot()
-                        _, _ = self.minio_client.upload_image_array(
-                            image_array=infer_image,
-                            object_name=object_name,
-                            image_format='jpg',
-                            quality=85
-                        )
-                        mqtt_message = {"imageInfo": {}}
-                        mqtt_message["imageInfo"]["imageId"] = ""
-                        mqtt_message["imageInfo"]["dataType"] = "url"
-                        mqtt_message["imageInfo"]["imageUrl"] = object_name
-                        mqtt_message["imageInfo"]["data"] = ""
-                        mqtt_message["imageInfo"]["objNum"] = len(result)
-                        mqtt_message["imageInfo"]["boxs"] = result_item
-                        mqtt_message["imageInfo"]["imageWidth"] = ori_img_shape[0]
-                        mqtt_message["imageInfo"]["imageHeight"] = ori_img_shape[1]
-                        mqtt_message["imageInfo"]["imageSize"] = ""
-                        # 发送到MQTT主题: {类别名}
-                        print(mqtt_message)
-                        mqtt_success = self.mqtt_client.publish_message(self.topic, mqtt_message)
-
-        else:
-            for result in results:
-                # 检查停止请求
-                if await self.check_stop():
-                    print("其他模型：收到停止请求，退出推理循环")
-                    return
-
-                ori_img_shape = result.orig_shape
-                results_dict = self.model.post_process([result])
-                type_id = []
-                for result_item in results_dict:
-                    id = result_item.get('track_id', None)
-                    if id not in type_id:
-                        object_name = f"ai/{date_str}/{self.model_name}/{current_timestamp}_{id}.jpg"
-                        print(object_name)
-                        type_id.append(id)
                         infer_image = result.plot()
                         # _, _ = self.minio_client.upload_image_array(
                         #     image_array=infer_image,
@@ -264,10 +240,48 @@ class Detector:
                         mqtt_message["imageInfo"]["imageWidth"] = ori_img_shape[0]
                         mqtt_message["imageInfo"]["imageHeight"] = ori_img_shape[1]
                         mqtt_message["imageInfo"]["imageSize"] = ""
+                        mqtt_message["imageInfo"]["task_id"] = self.task_id
+                        mqtt_message["imageInfo"]["timestamp"] = timestamp_str
                         # 发送到MQTT主题: {类别名}
                         print(mqtt_message)
                         # mqtt_success = self.mqtt_client.publish_message(self.topic, mqtt_message)
 
+        else:
+            for result in results:
+                current_timestamp = datetime.now()
+                date_str = current_timestamp.strftime("%Y-%m-%d")
+                # 检查停止请求
+                if await self.check_stop():
+                    print("其他模型：收到停止请求，退出推理循环")
+                    return
 
-
-
+                ori_img_shape = result.orig_shape
+                results_dict = self.model.post_process([result])
+                type_id = []
+                for result_item in results_dict:
+                    id = result_item.get('track_id', None)
+                    # if id not in type_id:
+                    object_name = f"ai/{date_str}/{self.model_name}/{current_timestamp}_{id}.jpg"
+                    print(object_name)
+                    type_id.append(id)
+                    infer_image = result.plot()
+                    # _, _ = self.minio_client.upload_image_array(
+                    #     image_array=infer_image,
+                    #     object_name=object_name,
+                    #     image_format='jpg',
+                    #     quality=85
+                    # )
+                    mqtt_message = {"imageInfo": {}}
+                    mqtt_message["imageInfo"]["imageId"] = ""
+                    mqtt_message["imageInfo"]["dataType"] = "url"
+                    mqtt_message["imageInfo"]["imageUrl"] = object_name
+                    mqtt_message["imageInfo"]["data"] = ""
+                    mqtt_message["imageInfo"]["objNum"] = len(result)
+                    mqtt_message["imageInfo"]["boxs"] = result_item
+                    mqtt_message["imageInfo"]["imageWidth"] = ori_img_shape[0]
+                    mqtt_message["imageInfo"]["imageHeight"] = ori_img_shape[1]
+                    mqtt_message["imageInfo"]["imageSize"] = ""
+                    mqtt_message["imageInfo"]["task_id"] = self.task_id
+                    # 发送到MQTT主题: {类别名}
+                    print(mqtt_message)
+                    # mqtt_success = self.mqtt_client.publish_message(self.topic, mqtt_message)
