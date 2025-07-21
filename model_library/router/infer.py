@@ -112,7 +112,8 @@ async def start_inference(
         workflow = Detector(
             model_index=model_index,
             video_path=video_path.strip(),
-            pixel_position=parsed_pixel_position
+            pixel_position=parsed_pixel_position,
+            task_id = task_id
         )
 
         # 获取MQTT主题和模型名称
