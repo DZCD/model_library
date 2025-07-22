@@ -3,15 +3,15 @@ from ultralytics import YOLO
 
 import torch
 from .base_model import BaseModel
-from .ocr_model import get_split_merge,image_processing,decodePlate,color,plateName,init_model
+from .ocr_model import get_split_merge, image_processing, decodePlate, color, plateName, init_model
 
 
 class PlateModel(BaseModel):
-    def __init__(self,model_path,ocr_model_path):
+    def __init__(self, model_path, ocr_model_path):
         super().__init__(model_path)
         self.ocr_model = init_model(ocr_model_path, is_color=True)
 
-    def post_process(self,results:Results)->list:
+    def post_process(self, results: Results) -> list:
         """提取Results中的推理结果数据，包括框的坐标、类别、置信度"""
         results_dict = []
         for result in results:
@@ -30,9 +30,10 @@ class PlateModel(BaseModel):
         ori_image_arr = yolo_result.orig_img
         result_data = []
         for i, boxes in enumerate(boxes_xyxy):
+
             rect = [int(x) for x in boxes]
             # 先忽略双层的判断,影像前处理
-            roi_img = ori_image_arr[rect[1] : rect[3], rect[0] : rect[2]]
+            roi_img = ori_image_arr[rect[1]: rect[3], rect[0]: rect[2]]
             # 如果是双层要额外进行处理
             if int(cls[i]) == 1:
                 roi_img = get_split_merge(roi_img)
@@ -52,6 +53,9 @@ class PlateModel(BaseModel):
             plate = ""
             for str_i in newPreds:
                 plate += plateName[str_i]
+            x1, y1, x2, y2 = boxes
+            hbb_points = [x1, y1, x2, y1, x2, y2, x1, y2]
+
             box_params = {
                 "x": boxes_xywh[i][0],
                 "y": boxes_xywh[i][1],
@@ -59,12 +63,13 @@ class PlateModel(BaseModel):
                 "height": boxes_xywh[i][3],
                 "rotation": boxes_xywh[i][4] if len(boxes_xywh[i]) == 5 else 0,
                 "score": boxes_conf[i],
-                "xyxy": boxes_xyxy[i],
+                "xyxy": hbb_points,
                 "track_id": "unknown",
                 "classed": cls[i],
                 "className": "license plate",
                 "text": plate,
-                "plate_status":"true" if len(plate) in [7,8] else "false",
+                "plate_status": True if len(plate) in [7, 8] else False,
+
             }
             result_data.append(box_params)
         # 将识别到的车牌位置以及字符串写入原图
