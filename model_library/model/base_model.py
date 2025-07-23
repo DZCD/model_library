@@ -14,40 +14,40 @@ class BaseModel:
         self.model = YOLO(model_path)
 
     def detect_image(self, source, conf=0.5, stream=False, classes: list = None, imgsz: tuple = (640, 640),
-                     verbose: bool = True):
+                     verbose: bool = True,half=True):
         if classes is not None:
             results = self.model.predict(source, stream=stream, conf=conf, classes=classes, imgsz=imgsz,
-                                         verbose=verbose)
+                                         verbose=verbose,half=half)
         else:
-            results = self.model.predict(source, stream=stream, conf=conf, imgsz=imgsz, verbose=verbose)
+            results = self.model.predict(source, stream=stream, conf=conf, imgsz=imgsz, verbose=verbose,half=half)
         return results
 
     def track_image(self, source, conf=0.5, stream=False, classes: list = None, imgsz: tuple = (640, 640),
-                    verbose: bool = True, iou=0.3):
+                    verbose: bool = True, iou=0.3,half=True):
         if classes is not None:
             results = self.model.track(source, stream=stream, conf=conf, classes=classes, imgsz=imgsz, verbose=verbose,
-                                       iou=iou)
+                                       iou=iou,half=half)
         else:
-            results = self.model.track(source, stream=stream, conf=conf, imgsz=imgsz, verbose=verbose, iou=iou)
+            results = self.model.track(source, stream=stream, conf=conf, imgsz=imgsz, verbose=verbose, iou=iou,half=half)
         return results
 
     def detect_video(self, source, conf=0.5, stream=False, vid_stride=1, classes: list = None,
-                     imgsz: tuple = (640, 640), verbose: bool = True, iou=0.3):
+                     imgsz: tuple = (640, 640), verbose: bool = True, iou=0.3,half=True):
         if classes is not None:
             results = self.model.predict(source, stream=stream, conf=conf, vid_stride=vid_stride, classes=classes,
-                                         imgsz=imgsz, iou=0.3, verbose=verbose)
+                                         imgsz=imgsz, iou=0.3, verbose=verbose,half=half)
         else:
-            results = self.model.predict(source, stream=stream, conf=conf, vid_stride=vid_stride, iou=iou)
+            results = self.model.predict(source, stream=stream, conf=conf, vid_stride=vid_stride, iou=iou,half=half)
         return results
 
     def track_video(self, source, conf=0.5, stream=False, vid_stride=1, classes: list = None, imgsz: tuple = (640, 640),
-                    verbose: bool = True, iou=0.3):
+                    verbose: bool = True, iou=0.3,half =True):
         if classes is not None:
             results = self.model.track(source, stream=stream, conf=conf, vid_stride=vid_stride, classes=classes,
-                                       imgsz=imgsz, iou=iou, verbose=verbose)
+                                       imgsz=imgsz, iou=iou, verbose=verbose,half=half)
         else:
             results = self.model.track(source, stream=stream, conf=conf, vid_stride=vid_stride, verbose=verbose,
-                                       iou=iou)
+                                       iou=iou,half =half)
         return results
 
     def post_process(self, results: Results, **kwargs) -> list:
