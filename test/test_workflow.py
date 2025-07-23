@@ -71,13 +71,15 @@ class TestWorkflow(unittest.TestCase):
         """测试模型3。事故检测"""
         from model_library.tools.detector import Detector
 
-        video_path = r"rtmp://10.1.38.245:1935/live/raw_stream3"
+        # video_path = r"rtmp://10.1.38.245:1935/live/raw_stream3"
         # video_path = r"rtsp://10.5.52.56:554/live/dji?callId=26-173"
+        video_path = r"rtmp://10.5.52.56:1935/live/7CTDM7T00BR29S?callId=26-173"
 
         # 创建Workflow实例
         workflow = Detector(
             model_index=3,
-            video_path=video_path  # 请提供实际的视频路径
+            video_path=video_path,  # 请提供实际的视频路径
+            task_id= "111"
         )
         topic = workflow.topic
         print(topic)
@@ -88,8 +90,12 @@ class TestWorkflow(unittest.TestCase):
     def test_workflow_image(self):
         from model_library.tools.reasoner import Reasoner
         reasoner = Reasoner()
-        # image_path = r"E:\项目\松山湖公安分局无人机自动巡检项目\事故检测\标注数据\OBB\20250705交警数据\标签数据\image\2025-07-05_17-36-02-838.png"
-        image_path = r"http://10.1.38.127:8000/2025-04-14_00-00-00-416.jpg"
-        result = reasoner.infer_image(image_path,4,verbose=True)
+        image_path = r"E:\项目\松山湖公安分局无人机自动巡检项目\图片识别测试\DJI_20250721160245_0001_V.jpeg"
+        # image_path = r"http://10.1.38.127:8000/2025-04-14_00-00-00-416.jpg"
+        loop = asyncio.get_event_loop()
+        result = loop.run_until_complete(reasoner.infer_image(image_path,3,verbose=True))
         print(result)
+
+
+
 
