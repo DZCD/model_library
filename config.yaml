@@ -53,7 +53,7 @@ mqtt:
   port: 1884
   username: "admin"
   password: "zkyy@2024"
-  client-id: "zkyy123"
+  client-id: "model_library"
 
 
 minio:
