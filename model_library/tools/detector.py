@@ -1,4 +1,6 @@
 """检测器，视频流后台推理任务。适用于对接开发部的工作流程"""
+import time
+import threading
 import cv2
 import asyncio
 from datetime import datetime
@@ -10,6 +12,7 @@ from ..model.track_accident import TrackAccident
 from ..tools.utils import Config
 from ..client.mqtt_client import MQTTClient
 from ..client.minio_client import MinioClient
+from .reasoner import reasoner_single
 
 
 class Detector:
@@ -30,7 +33,8 @@ class Detector:
         self.model = self.load_model()
 
         # 添加停止控制机制
-        self._should_stop = False
+        self._should_stop = False        # 检查任务执行状态。包括自动轮询以及手动停止
+        self.stream_timeout = 180       # 3分钟超时
         self._stop_event = asyncio.Event()
 
     def load_model(self):
@@ -69,7 +73,58 @@ class Detector:
             return True
         return False
 
+    def check_stream_alive(self):
+        """每30秒检查一次RTMP流连接状态"""
+        print("开始检查函数")
+        print("=== 监控任务启动 ===")
+        consecutive_failures = 0  # 连续失败次数
+        max_failures = 6  # 连续6次失败(3分钟)就认为断流
+        
+        while not self._should_stop:
+            time.sleep(3)  # 30秒检查一次
+            
+            try:
+                # 实际检查RTMP流连接
+                cap = cv2.VideoCapture(self.video_path)
+                
+                if cap.isOpened():
+                    # 尝试读取一帧来确认流是否正常
+                    ret, frame = cap.read()
+                    cap.release()
+                    
+                    if ret and frame is not None:
+                        print(f"RTMP流连接正常")
+                        consecutive_failures = 0  # 重置失败计数
+                    else:
+                        consecutive_failures += 1
+                        print(f"RTMP流无法读取帧 (失败次数: {consecutive_failures}/{max_failures})")
+                else:
+                    consecutive_failures += 1
+                    print(f"RTMP流连接失败 (失败次数: {consecutive_failures}/{max_failures})")
+                    cap.release()
+                
+                # 连续失败超过阈值，标记为断流
+                if consecutive_failures >= max_failures:
+                    print(f"RTMP流连续{consecutive_failures}次检查失败，超过3分钟，标记为断流")
+                    self._should_stop = True
+                    break
+                    
+            except Exception as e:
+                consecutive_failures += 1
+                print(f"检查RTMP流时发生异常: {e} (失败次数: {consecutive_failures}/{max_failures})")
+                
+                if consecutive_failures >= max_failures:
+                    print("RTMP流检查异常次数过多，标记为断流")
+                    self._should_stop = True
+                    break
+
     async def run_video(self):
+
+        # 在这里多线程启动视频流健康监控任务
+        monitor_thread = threading.Thread(target=self.check_stream_alive, daemon=True)
+        monitor_thread.start()
+        print("监控线程已启动")
+        
         # 获取视频FPS
         max_retries = 3  # 最大重试次数
         current_retry = 0
@@ -81,7 +136,7 @@ class Detector:
                     raise Exception(f"无法连接到视频流: {self.video_path}")
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 # vid_stride = int(fps / 2)  # 每秒推理2帧
-                vid_stride = int(fps / fps)  # todo这里直接定义死，每隔两面推理，正式场景要修改
+                vid_stride = 2  # todo这里直接定义死，每隔两面推理，正式场景要修改
                 vid_stride = vid_stride if vid_stride > 0 else 1
                 width, height = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
                 cap.release()
@@ -104,8 +159,6 @@ class Detector:
             results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, classes=self.classes,
                                              imgsz=(height, width), verbose=False,conf=self.model_conf)
         else:
-            # results = self.model.detect_video(self.video_path, stream=True, vid_stride=vid_stride,
-            #                                   imgsz=(height, width),verbose=False)
             results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, imgsz=(height, width),
                                              verbose=False,conf=self.model_conf)
         if self.model_index == 1:
@@ -160,6 +213,7 @@ class Detector:
                             #     image_format='jpg',
                             #     quality=85
                             # )
+
                             mqtt_message = {"imageInfo": {}}
                             mqtt_message["imageInfo"]["imageId"] = ""
                             mqtt_message["imageInfo"]["dataType"] = "url"
@@ -192,16 +246,16 @@ class Detector:
             # 事故检测模型
             accdent_id = []
 
-            frame_count = 0
             for result in results:
                 # 检查停止请求
+                accident_time_start = time.time()
+
                 if await self.check_stop():
                     print("模型3：收到停止请求，退出推理循环")
                     return
 
                 if len(result) == 0:
                     continue
-                frame_count += 1
 
                 # 后处理检测结果
                 results_list = self.model.post_process([result])
@@ -218,11 +272,28 @@ class Detector:
                     id = result_item.get('track_id', None)
                     if id in accdent_id:
                         print("同一事件，不重复上报")
+                        continue
                     if id not in accdent_id:
                         print(f"检测到新事件 事件{id}")
                         object_name = f"ai/{date_str}/{self.model_name}/{current_timestamp}_{id}.jpg"
                         print(object_name)
                         accdent_id.append(id)
+
+
+                        # 这里补充一个事故车辆数量的识别
+                        car_time_start = time.time()
+                        ori_image = result.orig_img
+                        result_hbb = await reasoner_single.infer_image(ori_image, 5, post_msg=False)
+                        result_xywh = result_hbb[0].boxes.xywh
+
+                        accident_obb = [result_item['x'], result_item['y'], result_item['width'], result_item['height'], result_item['rotation']]
+                        accident_car = self.model.obb_intersect(accident_obb, result_xywh)
+                        if accident_car == 0:
+                            continue
+                        result_item['accident_car_count'] = accident_car
+                        car_time_end = time.time()
+                        print(f"汽车识别推理时间{car_time_end-car_time_start}")
+
                         infer_image = result.plot()
                         # _, _ = self.minio_client.upload_image_array(
                         #     image_array=infer_image,
@@ -230,6 +301,7 @@ class Detector:
                         #     image_format='jpg',
                         #     quality=85
                         # )
+
                         mqtt_message = {"imageInfo": {}}
                         mqtt_message["imageInfo"]["imageId"] = ""
                         mqtt_message["imageInfo"]["dataType"] = "url"
@@ -245,6 +317,8 @@ class Detector:
                         # 发送到MQTT主题: {类别名}
                         print(mqtt_message)
                         # mqtt_success = self.mqtt_client.publish_message(self.topic, mqtt_message)
+                accident_time_end = time.time()
+                print(f"事故检测所花时间{accident_time_end-accident_time_start}")
 
         else:
             for result in results:
@@ -285,3 +359,4 @@ class Detector:
                     # 发送到MQTT主题: {类别名}
                     print(mqtt_message)
                     # mqtt_success = self.mqtt_client.publish_message(self.topic, mqtt_message)
+
