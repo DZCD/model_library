@@ -11,13 +11,10 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Form
 import logging
-from starlette.responses import JSONResponse
-from PIL import Image
+
 
 from ..tools.detector import Detector
-from ..tools.reasoner import Reasoner
-
-reasoner = Reasoner()
+from ..tools.reasoner import reasoner_single as reasoner
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -39,6 +36,7 @@ def run_workflow_in_thread(workflow: Detector, task_id: str):
         # 运行异步workflow
         loop.run_until_complete(workflow.run_video())
 
+        print("任务已完成")
         # 更新状态为完成
         if task_id in running_tasks:
             running_tasks[task_id]["status"] = "completed"
@@ -46,6 +44,7 @@ def run_workflow_in_thread(workflow: Detector, task_id: str):
 
     except Exception as e:
         # 更新状态为失败
+        print(f"{e}")
         if task_id in running_tasks:
             if workflow.is_stop_requested():
                 running_tasks[task_id]["status"] = "stopped"
@@ -164,17 +163,17 @@ async def start_inference(
 @router.post("/image")
 async def start_inference_image(
         image_path: str = Form(..., description="图片地址（支持本地文件、线上图片）"),
-        model_index: int = Form(..., description="模型类型 (0:电梯摩托车, 1:消防通道占用, 2:火点检测, 3:事故检测)"),
+        model_index: int = Form(..., description="模型类型 (0:电梯摩托车, 1:消防通道占用, 2:火点检测, 3:事故检测, 4:车牌识别, 5:车辆检测)"),
         pixel_position: Optional[str] = Form(None, description="像素位置（仅模型1需要，JSON格式的多边形顶点坐标列表）")
 ):
     """
-    开始模型推理任务
+    图像推理API - 异步处理
 
     - **image_path**: 图片地址（支持本地文件、线上图片）
-    - **model_index**: 模型类型 (0:电梯摩托车, 1:消防通道占用, 2:火点检测, 3:事故检测)
+    - **model_index**: 模型类型 (0:电梯摩托车, 1:消防通道占用, 2:火点检测, 3:事故检测, 4:车牌识别, 5:车辆检测)
     - **pixel_position**: 像素位置（仅模型1需要，JSON格式的多边形顶点坐标列表，如：[[0,941],[0,1342],[2152,1338],[2173,586],[1110,460]]）
 
-    返回MQTT主题名称，推理结果将实时推送到该主题
+    返回推理结果
     """
     resp = {
         "status": "succeed",
@@ -183,16 +182,44 @@ async def start_inference_image(
         "data": {}
     }
     try:
+        # 输入验证
+        if not image_path or not image_path.strip():
+            resp.update({
+                "status": "error",
+                "code": 400,
+                "msg": "图片路径不能为空"
+            })
+            return resp
 
-        result = reasoner.infer_image(image_path, model_index)
+        if model_index not in [0, 1, 2, 3, 4, 5]:
+            resp.update({
+                "status": "error", 
+                "code": 400,
+                "msg": "模型索引必须是 0, 1, 2, 3, 4, 5 中的一个"
+            })
+            return resp
+
+        # 使用异步推理
+        result = await reasoner.infer_image(image_path.strip(), model_index)
+        
         resp["data"]["item"] = result
+        resp["data"]["count"] = len(result) if result else 0
+        
         if not result:
-            resp["code"] = 500
+            resp.update({
+                "code": 200,  # 没有检测到目标也是成功的
+                "msg": "未检测到目标对象"
+            })
+        
         return resp
+        
     except Exception as e:
-        resp["msg"] = f"图片推理失败：{e}"
-        resp["status"] = "defend"
-        resp["code"] = 500
+        logger.error(f"图像推理失败: {str(e)}")
+        resp.update({
+            "msg": f"图片推理失败：{str(e)}",
+            "status": "error", 
+            "code": 500
+        })
         return resp
 
 
