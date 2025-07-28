@@ -1,7 +1,7 @@
-from ultralytics.engine.results import Results
-from ultralytics import YOLO
 
 import torch
+from ultralytics.engine.results import Results
+
 from .base_model import BaseModel
 from .ocr_model import get_split_merge, image_processing, decodePlate, color, plateName, init_model
 
