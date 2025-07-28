@@ -1,5 +1,6 @@
 import json
 import logging
+import uuid
 from typing import Any, Optional
 import paho.mqtt.client as mqtt
 from ..tools.utils import Config
@@ -14,7 +15,8 @@ class MQTTClient:
         self.mqtt_config = self.cfg.mqtt
         
         # 创建MQTT客户端
-        self.client = mqtt.Client(client_id=self.mqtt_config.get("client-id", "model_library"))
+        # self.client = mqtt.Client(client_id=self.mqtt_config.get("client-id", "model_library"))
+        self.client = mqtt.Client(client_id=uuid.uuid4().hex)  #用uuid来作为客户端id，防止频繁连接中断的问题
         
         # 设置用户名和密码
         if self.mqtt_config.get("username") and self.mqtt_config.get("password"):
