@@ -41,6 +41,7 @@ def run_workflow_in_thread(workflow: Detector, task_id: str):
         if task_id in running_tasks:
             running_tasks[task_id]["status"] = "completed"
             running_tasks[task_id]["end_time"] = datetime.now().isoformat()
+            running_tasks[task_id]["workflow"] = None
 
     except Exception as e:
         # 更新状态为失败
@@ -52,7 +53,10 @@ def run_workflow_in_thread(workflow: Detector, task_id: str):
                 running_tasks[task_id]["status"] = "failed"
                 running_tasks[task_id]["error_message"] = str(e)
             running_tasks[task_id]["end_time"] = datetime.now().isoformat()
+            # 清理workflow引用，释放内存
+            running_tasks[task_id]["workflow"] = None
     finally:
+        del workflow
         loop.close()
 
 
