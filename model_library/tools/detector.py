@@ -9,6 +9,7 @@ from collections import defaultdict
 from ..model.base_model import BaseModel
 from ..model.track_fireland import TrackFireland
 from ..model.track_accident import TrackAccident
+from ..model.plate_model import PlateModel
 from ..tools.utils import Config
 from ..client.mqtt_client import MQTTClient
 from ..client.minio_client import MinioClient
@@ -57,6 +58,8 @@ class Detector:
                 model = BaseModel(model_path)
             elif self.model_index == 3:
                 model = TrackAccident(model_path)
+            elif self.model_index == 4:
+                model = PlateModel(model_path)
             else:
                 log_task_error(f"无效的模型索引 - 任务ID:{self.task_id}, 模型索引:{self.model_index}")
                 raise ValueError(f"Invalid model index: {self.model_index}")
@@ -92,6 +95,7 @@ class Detector:
         """异步检查停止请求"""
         if self._should_stop:
             log_task(f"检测到停止请求，正在停止工作流 - 任务ID:{self.task_id}")
+            self.mqtt_client.disconnect()
             return True
         return False
 
@@ -159,7 +163,7 @@ class Detector:
                     raise Exception(f"无法连接到视频流: {self.video_path}")
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 # vid_stride = int(fps / 2)  # 每秒推理2帧
-                vid_stride = 2  # todo这里直接定义死，每隔两面推理，正式场景要修改
+                vid_stride = 2  # todo这里直接定义死，每隔两秒推理，正式场景要修改
                 vid_stride = vid_stride if vid_stride > 0 else 1
                 width, height = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
                 cap.release()
@@ -268,7 +272,7 @@ class Detector:
 
         elif self.model_index == 3:
             # 事故检测模型
-            accdent_id = []
+            accident_id = []
 
             for result in results:
                 # 检查停止请求
@@ -287,21 +291,20 @@ class Detector:
                 ori_img_shape = result.orig_shape
                 if not results_list:
                     continue
-
                 for result_item in results_list:
                     current_timestamp = datetime.now()
                     date_str = current_timestamp.strftime("%Y-%m-%d")
                     timestamp_str = current_timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")
 
                     id = result_item.get('track_id', None)
-                    if id in accdent_id:
-                        log_task_debug(f"重复事故事件，跳过上报 - 任务ID:{self.task_id}, 事件ID:{id}")
+                    if id in accident_id:
+                        # log_task_debug(f"重复事故事件，跳过上报 - 任务ID:{self.task_id}, 事件ID:{id}")
                         continue
-                    if id not in accdent_id:
+                    if id not in accident_id:
                         log_task(f"检测到新事故事件 - 任务ID:{self.task_id}, 事件ID:{id}")
                         object_name = f"ai/{date_str}/{self.model_name}/{current_timestamp}_{id}.jpg"
                         log_task_debug(f"事故图片保存路径 - 任务ID:{self.task_id}, 路径:{object_name}")
-                        accdent_id.append(id)
+                        accident_id.append(id)
 
 
                         # 这里补充一个事故车辆数量的识别
@@ -339,10 +342,11 @@ class Detector:
                         mqtt_message["imageInfo"]["task_id"] = self.task_id
                         mqtt_message["imageInfo"]["timestamp"] = timestamp_str
                         # 发送到MQTT主题: {类别名}
+                        print(mqtt_message)
                         log_task_debug(f"发送事故MQTT消息 - 任务ID:{self.task_id}, 主题:{self.topic}")
                         # mqtt_success = self.mqtt_client.publish_message(self.topic, mqtt_message)
                 accident_time_end = time.time()
-                log_task_debug(f"事故检测处理完成 - 任务ID:{self.task_id}, 总耗时:{accident_time_end-accident_time_start:.3f}秒")
+                # log_task_debug(f"事故检测处理完成 - 任务ID:{self.task_id}, 总耗时:{accident_time_end-accident_time_start:.3f}秒")
 
         else:
             for result in results:
