@@ -1,17 +1,13 @@
 from .reasoner import reasoner_single
 from .detector import Detector
 from .logger import (
-    logger, get_logger, setup_custom_logger,
-    debug, info, warning, error, critical, exception,
-    log_function, log_performance
+    log_api_complete,
+    log_task, log_task_error, log_task_debug,
 )
 
 __all__ = [
     "reasoner_single",
     "Detector",
-    "logger",
-    "get_logger", 
-    "setup_custom_logger",
-    "debug", "info", "warning", "error", "critical", "exception",
-    "log_function", "log_performance"
+    "log_api_complete",
+    "log_task", "log_task_error", "log_task_debug",
 ]
