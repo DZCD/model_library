@@ -69,32 +69,33 @@ async def api_log_middleware(request: Request, call_next):
                         request_params["form"] = {"parse_error": True}
                 
                 elif "multipart/form-data" in content_type:
-                    # 文件上传，解析表单字段
+                    # 使用FastAPI的form()方法正确解析multipart
                     try:
-                        # 简单解析multipart数据（只获取字段名，不处理文件内容）
-                        body_str = original_body.decode('utf-8', errors='ignore')
+                        # 重新读取请求体（因为可能已经被消费）
+                        await request.body()  # 重置body读取器
+
+                        # 使用FastAPI的form()方法解析
+                        form_data = await request.form()
+
+                        # 提取字段值
                         form_fields = {}
-                        
-                        # 查找表单字段
-                        lines = body_str.split('\r\n')
-                        current_field = None
-                        for line in lines:
-                            if 'name="' in line:
-                                start = line.find('name="') + 6
-                                end = line.find('"', start)
-                                if end > start:
-                                    current_field = line[start:end]
-                            elif current_field and line.strip() and not line.startswith('-'):
-                                form_fields[current_field] = line.strip()
-                                current_field = None
-                        
+                        for field_name, field_value in form_data.items():
+                            if hasattr(field_value, 'filename'):
+                                # 文件字段
+                                form_fields[field_name] = f"file:{field_value.filename}"
+                            else:
+                                # 普通字段
+                                form_fields[field_name] = str(field_value)
+
                         request_params["multipart"] = {
                             "fields": form_fields,
                             "size": len(original_body)
                         }
-                    except:
-                        request_params["multipart"] = {"size": len(original_body)}
-                
+                    except Exception as e:
+                        request_params["multipart"] = {
+                            "error": str(e),
+                            "size": len(original_body)
+                        }
                 else:
                     # 其他类型，只记录大小
                     request_params["body"] = {"size": len(original_body), "content_type": content_type}

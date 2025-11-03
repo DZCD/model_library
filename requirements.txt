@@ -1,0 +1,39 @@
+# AI模型推理系统依赖 - GPU版本 (CUDA 12.8)
+# PyTorch 2.7.0 + Python 3.11
+# =====================================================
+
+# Web框架和服务器
+fastapi==0.115.13
+uvicorn==0.34.3
+python-multipart==0.0.20
+
+# PyTorch GPU版本 (CUDA 12.8) - 最新版本
+torch==2.7.0
+torchvision==0.22.0
+torchaudio==2.7.0
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+# 计算机视觉和图像处理 (Python 3.11兼容版本)
+opencv-python==4.8.1.78
+Pillow==10.4.0
+numpy==1.26.4
+matplotlib==3.8.4
+
+# YOLO和深度学习 - 更新到支持YOLOv11的版本
+ultralytics>=8.3.0
+
+# 几何计算
+shapely==2.0.6
+
+# 数据处理 (Python 3.11兼容版本)
+pandas==2.2.2
+
+# 配置和数据格式
+pyyaml==6.0.2
+
+# 网络和通信
+requests==2.31.0
+paho-mqtt==1.6.1
+
+# 对象存储
+minio==7.1.0 

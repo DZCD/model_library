@@ -26,8 +26,10 @@ model:
   3:
     model_name: "accident"
     model_path: "weight/yolo_accident_obb.pt"    # 事故检测
+    # model_path: "weight/yolo_accident_obb_v2.pt"    # 事故检测_20251023
+    # model_path: "weight/yolo_accident_obb_havegame_nomoni.pt"    # 事故检测_20251024
     classes: [0]
-    config: 0.7
+    config: 0.75
     time_step: 60  # 消息推送的间隔
     imgsz: 1  # 1 代表模型采用原图大小
 
@@ -45,6 +47,21 @@ model:
     model_path: "weight/yolo_visdrone.pt"    # 车牌检测
     config: 0.5
     classes: [3,4,5,8]
+    imgsz: 0  # 0 代表模型不采用原图大小
+  
+  6:
+    model_name: "infrared"
+    # model_path: "weight/yolo_infrared.pt"    # 红外行人检测
+    model_path: "weight/yolo_infrared_v2.pt"    # 红外行人检测_20251023
+    config: 0.3
+    classes: [0,1]
+    imgsz: 0  # 0 代表模型不采用原图大小
+
+  7:
+    model_name: "face_detect"
+    model_path: "weight/yolov11n-face.pt"    # 人脸检测
+    config: 0.3
+    classes: [0]
     imgsz: 0  # 0 代表模型不采用原图大小
 
 

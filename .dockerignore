@@ -1,0 +1,47 @@
+# Git和版本控制
+.git
+.gitignore
+
+# Python缓存和构建
+__pycache__/
+*.py[cod]
+*.so
+build/
+dist/
+*.egg-info/
+
+# 虚拟环境
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# 日志
+logs/
+*.log
+
+# 临时文件
+temp/
+tmp/
+.tmp/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# Docker相关
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# 文档和测试
+README.md
+test/
+tests/
+
+# 环境配置
+.env*

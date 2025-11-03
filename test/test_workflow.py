@@ -39,7 +39,7 @@ class TestWorkflow(unittest.TestCase):
             (2173, 586),  # 右上角
             (1110, 460),  # 左上角
         ]
-        video_path = r"E:\项目\深圳南山智慧消防\消防占用\sjlj\D49_20250531233830.mp4"
+        video_path = r"rtmp://113.105.137.153:1935/rtp/34020000001110000001_34020000001320000404"
         # video_path = r"rtmp://10.1.38.245:1935/live/raw_stream3"
 
         # 创建Workflow实例
@@ -55,14 +55,35 @@ class TestWorkflow(unittest.TestCase):
     def test_workflow_model0(self):
         """测试模型0（电梯摩托车检测）的workflow"""
         from model_library.tools.detector import Detector
-        # video_path = "E:\项目\深圳南山智慧消防\消防占用\sjlj\D49_20250531233830.mp4"
-        video_path = r"E:\项目\深圳南山智慧消防\电梯电动车\测试视频.mp4"
+        video_path = r"rtmp://10.1.38.245:1935/live/raw_stream3"
+        # video_path = r"E:\项目\深圳南山智慧消防\电梯电动车\测试视频\测试视频.mp4"
 
         # 创建Workflow实例
         workflow = Detector(
             model_index=0,
-            video_path=video_path  # 请提供实际的视频路径
+            video_path=video_path,  # 请提供实际的视频路径
+            task_id="111"
         )
+        topic = workflow.topic
+        print(topic)
+
+        # 运行测试
+        asyncio.run(workflow.run_video())
+
+    def test_workflow_model2(self):
+        """测试模型2（火点）的workflow"""
+        from model_library.tools.detector import Detector
+        # video_path = "E:\项目\深圳南山智慧消防\消防占用\sjlj\D49_20250531233830.mp4"
+        video_path = r"E:\项目\深圳南山智慧消防\烟雾明火\测试视频\明火视频.mp4"
+
+        # 创建Workflow实例
+        workflow = Detector(
+            model_index=2,
+            video_path=video_path,  # 请提供实际的视频路径
+            task_id="111"
+        )
+        topic = workflow.topic
+        print(topic)
 
         # 运行测试
         asyncio.run(workflow.run_video())
@@ -71,9 +92,9 @@ class TestWorkflow(unittest.TestCase):
         """测试模型3。事故检测"""
         from model_library.tools.detector import Detector
 
-        # video_path = r"rtmp://10.1.38.245:1935/live/raw_stream3"
+        video_path = r"rtmp://10.1.38.245:1935/live/raw_stream3"
         # video_path = r"rtsp://10.5.52.56:554/live/dji?callId=26-173"
-        video_path = r"rtmp://10.5.52.56:1935/live/7CTDM7T00BR29S?callId=26-173"
+        # video_path = r"rtmp://10.5.52.56:1935/live/7CTDM7T00BR29S?callId=26-173"
 
         # 创建Workflow实例
         workflow = Detector(

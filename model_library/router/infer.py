@@ -7,6 +7,8 @@ import asyncio
 import uuid
 import json
 import threading
+import ast
+
 from typing import Optional, Dict, Any
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Form
@@ -85,11 +87,11 @@ async def start_inference(
                 "data": {}
             }
 
-        if model_index not in [0, 1, 2, 3]:
+        if model_index not in [0, 1, 2, 3,4,5,6]:
             return {
                 "status": "error",
                 "code": 400,
-                "msg": "模型索引必须是 0, 1, 2, 3 中的一个",
+                "msg": "模型索引必须是 0, 1, 2, 3,4,5,6 中的一个",
                 "data": {}
             }
 
@@ -97,7 +99,7 @@ async def start_inference(
         parsed_pixel_position = None
         if pixel_position:
             try:
-                parsed_pixel_position = json.loads(pixel_position)
+                parsed_pixel_position = ast.literal_eval(pixel_position)
                 if not isinstance(parsed_pixel_position, list):
                     raise ValueError("pixel_position必须是坐标列表")
             except (json.JSONDecodeError, ValueError) as e:
@@ -168,7 +170,6 @@ async def start_inference(
 async def start_inference_image(
         image_path: str = Form(..., description="图片地址（支持本地文件、线上图片）"),
         model_index: int = Form(..., description="模型类型 (0:电梯摩托车, 1:消防通道占用, 2:火点检测, 3:事故检测, 4:车牌识别, 5:车辆检测)"),
-        pixel_position: Optional[str] = Form(None, description="像素位置（仅模型1需要，JSON格式的多边形顶点坐标列表）")
 ):
     """
     图像推理API - 异步处理
@@ -195,11 +196,11 @@ async def start_inference_image(
             })
             return resp
 
-        if model_index not in [0, 1, 2, 3, 4, 5]:
+        if model_index not in [0, 1, 2, 3, 4, 5, 6, 7]:
             resp.update({
                 "status": "error", 
                 "code": 400,
-                "msg": "模型索引必须是 0, 1, 2, 3, 4, 5 中的一个"
+                "msg": "模型索引必须是 0, 1, 2, 3, 4, 5, 6, 7 中的一个"
             })
             return resp
 
@@ -207,7 +208,7 @@ async def start_inference_image(
         result = await reasoner.infer_image(image_path.strip(), model_index)
         
         resp["data"]["item"] = result
-        resp["data"]["count"] = len(result) if result else 0
+        # resp["data"]["count"] = len(result) if result else 0
         
         if not result:
             resp.update({
