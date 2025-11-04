@@ -8,10 +8,72 @@ from model_library.router.config import config_router
 from model_library.router.infer import router as infer_router
 from model_library.tools import log_api_complete
 
+# API标签元数据配置
+tags_metadata = [
+    {
+        "name": "配置管理",
+        "description": "系统配置相关接口，包括模型配置查询等",
+    },
+    {
+        "name": "模型推理",
+        "description": "AI模型推理服务，支持视频流和图像推理",
+        "externalDocs": {
+            "description": "模型使用说明",
+            "url": "https://example.com/models-docs",
+        },
+    },
+]
+
+# FastAPI应用配置
 app = FastAPI(
-    title="南山消防智能检测系统",
-    description="提供消防相关的AI模型推理服务",
-    version="1.0.0"
+    title="南山消防智能检测系统 API",
+    description="""
+## 南山消防智能检测系统
+
+这是一个基于FastAPI构建的现代化AI模型推理系统，专门为消防安全智能检测而设计。
+
+### 主要功能
+
+- **多模型支持**: 支持7种不同类型的消防相关AI检测模型
+- **实时推理**: 支持视频流实时处理和单张图像推理
+- **异步处理**: 采用异步架构，支持高并发请求
+- **消息推送**: 集成MQTT，实时推送推理结果
+- **对象存储**: 集成MinIO，自动存储推理结果
+- **完整监控**: 提供任务状态监控和管理功能
+
+### 支持的模型类型
+
+1. **电梯摩托车检测** (model_index=0)
+2. **消防通道占用检测** (model_index=1) - 需要像素位置参数
+3. **火点检测** (model_index=2)
+4. **事故检测** (model_index=3) - 包含车辆计数功能
+5. **车牌识别检测** (model_index=4) - 结合OCR识别
+6. **车辆检测** (model_index=5)
+7. **红外行人检测** (model_index=6)
+
+### 技术特点
+
+- 🚀 **高性能**: 基于FastAPI和UVicorn，支持异步处理
+- 🔧 **易部署**: 支持Docker容器化部署
+- 📊 **可监控**: 完整的API日志和任务状态监控
+- 🔌 **易集成**: 标准RESTful API，支持跨域访问
+    """,
+    version="1.0.0",
+    summary="南山消防智能检测系统 - AI模型推理服务",
+    terms_of_service="https://example.com/terms/",
+    contact={
+        "name": "API支持团队",
+        "url": "https://example.com/contact",
+        "email": "support@example.com",
+    },
+    license_info={
+        "name": "MIT License",
+        "identifier": "MIT",
+    },
+    openapi_tags=tags_metadata,
+    openapi_url="/openapi.json",
+    docs_url="/docs",  # Swagger UI
+    redoc_url="/redoc",  # ReDoc
 )
 
 # 自定义Request类，支持重复读取body

@@ -61,8 +61,9 @@ model:
     model_name: "face_detect"
     model_path: "weight/yolov11n-face.pt"    # 人脸检测
     config: 0.3
+    conf: 0.3
     classes: [0]
-    imgsz: 0  # 0 代表模型不采用原图大小
+    imgsz: 1  # 1 代表模型采用原图大小
 
 
 mqtt:

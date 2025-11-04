@@ -8,11 +8,12 @@ from typing import Any
 from PIL import Image
 from shapely.geometry import Polygon
 
-from ..model.base_model import BaseModel
-from ..model.plate_model import PlateModel
-from ..model.car_model import CarModel
-from .utils import Config
-from .logger import log_task, log_task_error, log_task_debug
+# from ..model.base_model import BaseModel
+from model_library.model.base_model import BaseModel
+from model_library.model.plate_model import PlateModel
+from model_library.model.car_model import CarModel
+from model_library.tools.utils import Config
+from model_library.tools.logger import log_task, log_task_error, log_task_debug
 
 
 class Reasoner:

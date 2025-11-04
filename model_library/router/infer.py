@@ -11,7 +11,7 @@ import ast
 
 from typing import Optional, Dict, Any
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Form
+from fastapi import APIRouter, HTTPException, Form, Path
 import logging
 
 
@@ -22,7 +22,16 @@ from ..tools.reasoner import reasoner_single as reasoner
 logger = logging.getLogger(__name__)
 
 # 创建路由器
-router = APIRouter(prefix="/infer", tags=["模型推理"])
+router = APIRouter(
+    prefix="/infer",
+    tags=["模型推理"],
+    responses={
+        400: {"description": "请求参数错误"},
+        404: {"description": "任务或资源未找到"},
+        500: {"description": "服务器内部错误"},
+        503: {"description": "服务暂时不可用"}
+    }
+)
 
 # 存储运行中的任务
 running_tasks: Dict[str, Dict[str, Any]] = {}
@@ -62,21 +71,95 @@ def run_workflow_in_thread(workflow: Detector, task_id: str):
         loop.close()
 
 
-@router.post("/video")
+@router.post(
+    "/video",
+    summary="启动视频流推理任务",
+    description="""
+    启动一个异步的视频流推理任务，支持实时AI检测和结果推送。
+
+    ## 功能特点
+    - **异步处理**: 任务在后台异步执行，立即返回任务ID
+    - **实时推送**: 检测结果通过MQTT实时推送到指定主题
+    - **状态监控**: 支持任务状态查询和管理
+    - **资源管理**: 自动清理已完成任务，防止内存泄漏
+
+    ## 支持的视频格式
+    - **RTMP流**: rtmp://server/live/stream
+    - **RTSP流**: rtsp://ip:port/path
+    - **本地文件**: /path/to/video.mp4
+    - **HTTP流**: http://server/video.mp4
+
+    ## 使用流程
+    1. 调用此接口创建推理任务
+    2. 获取返回的task_id和mqtt_topic
+    3. 订阅MQTT主题接收实时结果
+    4. 使用task_id查询任务状态
+    5. 任务完成后调用清理接口
+
+    ## 注意事项
+    - 任务创建后会立即开始执行
+    - 每个任务会占用相应的GPU/CPU资源
+    - 建议定期清理已完成任务
+    - 消防通道占用检测必须提供pixel_position参数
+    """,
+    response_description="推理任务创建成功，返回任务ID、MQTT主题等任务信息"
+)
 async def start_inference(
-        video_path: str = Form(..., description="视频流地址（支持rtmp、rtsp、本地文件等）"),
-        model_index: int = Form(..., description="模型类型 (0:电梯摩托车, 1:消防通道占用, 2:火点检测, 3:事故检测)"),
-        pixel_position: Optional[str] = Form(None, description="像素位置（仅模型1需要，JSON格式的多边形顶点坐标列表）")
+        video_path: str = Form(
+            ...,
+            description="视频流地址，支持多种格式：<br>"
+                     "- RTMP: rtmp://server/live/stream<br>"
+                     "- RTSP: rtsp://ip:port/path<br>"
+                     "- 本地文件: /path/to/video.mp4<br>"
+                     "- HTTP流: http://server/video.mp4",
+            examples=[
+                {"value": "rtmp://live.example.com/stream1", "description": "RTMP直播流"},
+                {"value": "rtsp://192.168.1.100:554/stream", "description": "RTSP摄像头流"},
+                {"value": "/videos/test.mp4", "description": "本地视频文件"},
+                {"value": "http://example.com/video.mp4", "description": "HTTP视频流"}
+            ]
+        ),
+        model_index: int = Form(
+            ...,
+            description="模型类型索引，对应不同的检测功能：<br>"
+                     "**0**: 电梯摩托车检测<br>"
+                     "**1**: 消防通道占用检测 *(需要pixel_position)*<br>"
+                     "**2**: 火点检测<br>"
+                     "**3**: 事故检测 *(自动触发车辆计数)*<br>"
+                     "**4**: 车牌识别检测<br>"
+                     "**5**: 车辆检测<br>"
+                     "**6**: 红外行人检测",
+            ge=0, le=6,
+            examples=[
+                {"value": 0, "description": "电梯摩托车检测"},
+                {"value": 1, "description": "消防通道占用检测"},
+                {"value": 2, "description": "火点检测"},
+                {"value": 3, "description": "事故检测"}
+            ]
+        ),
+        pixel_position: Optional[str] = Form(
+            None,
+            description="""
+            像素位置坐标，仅消防通道占用检测(model_index=1)需要。
+
+            格式：JSON字符串，表示多边形的顶点坐标列表。
+
+            示例：[[0,941],[0,1342],[2152,1338],[2173,586],[1110,460]]
+
+            说明：
+            - 坐标系：左上角为原点(0,0)
+            - 格式：[[x1,y1],[x2,y2],...]
+            - 最少3个点构成多边形
+            - 点的顺序按多边形边缘排列
+            """,
+            examples=[
+                {
+                    "value": "[[0,941],[0,1342],[2152,1338],[2173,586],[1110,460]]",
+                    "description": "消防通道多边形区域"
+                }
+            ]
+        )
 ):
-    """
-    开始模型推理任务
-    
-    - **video_path**: 视频流地址（支持rtmp、rtsp、本地文件等）
-    - **model_index**: 模型类型 (0:电梯摩托车, 1:消防通道占用, 2:火点检测, 3:事故检测)
-    - **pixel_position**: 像素位置（仅模型1需要，JSON格式的多边形顶点坐标列表，如：[[0,941],[0,1342],[2152,1338],[2173,586],[1110,460]]）
-    
-    返回MQTT主题名称，推理结果将实时推送到该主题
-    """
     try:
         # 输入验证
         if not video_path or not video_path.strip():
@@ -166,20 +249,70 @@ async def start_inference(
         }
 
 
-@router.post("/image")
+@router.post(
+    "/image",
+    summary="图像推理检测",
+    description="""
+    对单张图片进行AI推理检测，立即返回检测结果。
+
+    ## 功能特点
+    - **同步处理**: 立即返回检测结果
+    - **多格式支持**: 支持本地文件和在线图片
+    - **高精度**: 基于YOLO等先进检测算法
+    - **结构化输出**: 返回标准化的检测结果
+
+    ## 支持的图片格式
+    - **本地文件**: /path/to/image.jpg
+    - **在线图片**: http://example.com/image.jpg
+    - **常见格式**: JPG, PNG, BMP, TIFF等
+
+    ## 返回结果格式
+    - 检测框坐标 (x1, y1, x2, y2)
+    - 置信度分数
+    - 类别标签
+    - 车牌OCR结果（车牌检测模型）
+
+    ## 使用场景
+    - 图片批量检测
+    - 实时图片分析
+    - 移动端上传检测
+    - 第三方系统集成
+    """,
+    response_description="图像检测结果，包含检测到的目标列表和置信度信息"
+)
 async def start_inference_image(
-        image_path: str = Form(..., description="图片地址（支持本地文件、线上图片）"),
-        model_index: int = Form(..., description="模型类型 (0:电梯摩托车, 1:消防通道占用, 2:火点检测, 3:事故检测, 4:车牌识别, 5:车辆检测)"),
+        image_path: str = Form(
+            ...,
+            description="图片地址，支持多种来源：<br>"
+                     "- 本地文件: /path/to/image.jpg<br>"
+                     "- HTTP图片: http://example.com/image.jpg<br>"
+                     "- HTTPS图片: https://example.com/image.jpg<br>"
+                     "- 支持格式: JPG, PNG, BMP, TIFF等",
+            examples=[
+                {"value": "/images/test.jpg", "description": "本地图片文件"},
+                {"value": "http://example.com/image.jpg", "description": "HTTP图片"},
+                {"value": "https://example.com/image.png", "description": "HTTPS图片"}
+            ]
+        ),
+        model_index: int = Form(
+            ...,
+            description="模型类型索引：<br>"
+                     "**0**: 电梯摩托车检测<br>"
+                     "**1**: 消防通道占用检测<br>"
+                     "**2**: 火点检测<br>"
+                     "**3**: 事故检测<br>"
+                     "**4**: 车牌识别检测 *(含OCR)*<br>"
+                     "**5**: 车辆检测<br>"
+                     "**6**: 红外行人检测",
+            ge=0, le=6,
+            examples=[
+                {"value": 0, "description": "电梯摩托车检测"},
+                {"value": 1, "description": "消防通道占用检测"},
+                {"value": 2, "description": "火点检测"},
+                {"value": 4, "description": "车牌识别检测"}
+            ]
+        ),
 ):
-    """
-    图像推理API - 异步处理
-
-    - **image_path**: 图片地址（支持本地文件、线上图片）
-    - **model_index**: 模型类型 (0:电梯摩托车, 1:消防通道占用, 2:火点检测, 3:事故检测, 4:车牌识别, 5:车辆检测)
-    - **pixel_position**: 像素位置（仅模型1需要，JSON格式的多边形顶点坐标列表，如：[[0,941],[0,1342],[2152,1338],[2173,586],[1110,460]]）
-
-    返回推理结果
-    """
     resp = {
         "status": "succeed",
         "code": 200,
@@ -228,15 +361,44 @@ async def start_inference_image(
         return resp
 
 
-@router.get("/status/{task_id}")
-async def get_task_status(task_id: str):
-    """
-    查询推理任务状态
-    
-    - **task_id**: 任务ID
-    
-    返回任务当前状态信息
-    """
+@router.get(
+    "/status/{task_id}",
+    summary="查询推理任务状态",
+    description="""
+    查询指定推理任务的详细状态信息。
+
+    ## 状态说明
+    - **running**: 任务正在运行
+    - **stopping**: 任务正在停止中
+    - **completed**: 任务已完成
+    - **failed**: 任务执行失败
+    - **stopped**: 任务被手动停止
+
+    ## 返回信息
+    - 任务ID和当前状态
+    - MQTT主题名称
+    - 使用的模型名称
+    - 开始时间
+    - 错误信息（如果有）
+    - 停止请求状态
+
+    ## 使用场景
+    - 监控任务执行进度
+    - 检查任务是否完成
+    - 调试任务失败原因
+    - 确认任务停止状态
+    """,
+    response_description="任务状态详细信息，包括执行状态、时间信息等"
+)
+async def get_task_status(
+    task_id: str = Path(
+        ...,
+        description="任务ID，创建推理任务时返回的唯一标识符",
+        examples=[
+            {"value": "123e4567-e89b-12d3-a456-426614174000", "description": "示例任务ID"}
+        ]
+    )
+):
     if task_id not in running_tasks:
         return {
             "status": "error",
@@ -269,15 +431,41 @@ async def get_task_status(task_id: str):
     }
 
 
-@router.delete("/stop/{task_id}")
-async def stop_task(task_id: str):
-    """
-    停止推理任务
-    
-    - **task_id**: 任务ID
-    
-    停止指定的推理任务
-    """
+@router.delete(
+    "/stop/{task_id}",
+    summary="停止推理任务",
+    description="""
+    停止正在运行的推理任务，释放系统资源。
+
+    ## 功能说明
+    - 发送停止信号到正在运行的任务
+    - 任务会在当前处理完成后安全停止
+    - 异步操作，立即返回响应
+    - 自动清理相关资源
+
+    ## 停止流程
+    1. 接收停止请求
+    2. 向任务发送停止信号
+    3. 任务完成当前帧处理后退出
+    4. 自动清理内存和线程资源
+
+    ## 注意事项
+    - 停止操作是异步的，不会立即生效
+    - 已完成的任务无需停止
+    - 停止后的任务状态变为"stopped"
+    - 建议定期清理已停止的任务
+    """,
+    response_description="停止请求确认信息，包含任务ID和状态"
+)
+async def stop_task(
+    task_id: str = Path(
+        ...,
+        description="要停止的任务ID",
+        examples=[
+            {"value": "123e4567-e89b-12d3-a456-426614174000", "description": "示例任务ID"}
+        ]
+    )
+):
     if task_id not in running_tasks:
         return {
             "status": "error",
@@ -316,13 +504,34 @@ async def stop_task(task_id: str):
     }
 
 
-@router.get("/tasks")
+@router.get(
+    "/tasks",
+    summary="获取所有任务列表",
+    description="""
+    获取系统中当前所有推理任务的状态信息。
+
+    ## 返回信息
+    - 每个任务的详细状态
+    - 任务总数统计
+    - 按状态分组的信息
+
+    ## 使用场景
+    - 系统监控和状态检查
+    - 任务管理和资源监控
+    - 性能分析和优化
+    - 故障排查和调试
+
+    ## 信息详情
+    每个任务包含：
+    - 任务ID和状态
+    - MQTT主题
+    - 模型名称
+    - 开始时间
+    - 错误信息（如有）
+    """,
+    response_description="所有任务的完整列表，包含详细状态信息"
+)
 async def list_tasks():
-    """
-    列出所有推理任务
-    
-    返回当前所有任务的状态信息
-    """
     tasks = []
     for task_id, task_info in running_tasks.items():
         # 判断当前任务状态
@@ -352,13 +561,34 @@ async def list_tasks():
     }
 
 
-@router.get("/models")
+@router.get(
+    "/models",
+    summary="获取支持的模型列表",
+    description="""
+    获取系统支持的所有AI模型信息，包括模型说明和使用要求。
+
+    ## 模型类型说明
+    1. **电梯摩托车检测** (0) - 检测电梯内的摩托车违规停放
+    2. **消防通道占用检测** (1) - 检测消防通道是否被占用，需要定义检测区域
+    3. **火点检测** (2) - 检测图像中的火点，用于火灾预警
+    4. **事故检测** (3) - 检测交通事故，自动统计涉事车辆数量
+    5. **车牌识别检测** (4) - 检测车辆并识别车牌号码
+    6. **车辆检测** (5) - 通用车辆检测
+    7. **红外行人检测** (6) - 基于红外图像的行人检测
+
+    ## 特殊要求
+    - 消防通道占用检测需要提供像素位置参数
+    - 事故检测会自动触发车辆计数功能
+    - 车牌识别检测包含OCR文字识别
+
+    ## 返回信息
+    - 模型名称和描述
+    - 是否需要特殊参数
+    - 模型功能说明
+    """,
+    response_description="所有支持的模型详细信息列表"
+)
 async def get_models():
-    """
-    获取支持的模型列表
-    
-    返回所有可用的模型信息
-    """
     models = {
         0: {
             "name": "elevator_motor",
@@ -392,13 +622,37 @@ async def get_models():
     }
 
 
-@router.delete("/cleanup")
+@router.delete(
+    "/cleanup",
+    summary="清理已完成的任务",
+    description="""
+    清理所有已完成的推理任务，释放系统资源。
+
+    ## 清理范围
+    - **completed**: 已成功完成的任务
+    - **failed**: 执行失败的任务
+    - **stopped**: 被手动停止的任务
+
+    ## 功能说明
+    - 删除任务记录和相关引用
+    - 释放内存和线程资源
+    - 返回清理统计信息
+    - 保留正在运行的任务
+
+    ## 使用建议
+    - 定期调用此接口清理资源
+    - 避免内存泄漏和资源浪费
+    - 监控系统运行状态
+    - 适合自动化运维脚本调用
+
+    ## 注意事项
+    - 清理操作不可逆
+    - 建议在系统负载较低时执行
+    - 清理后任务记录将无法查询
+    """,
+    response_description="清理操作结果，包含清理的任务数量和剩余任务信息"
+)
 async def cleanup_completed_tasks():
-    """
-    清理已完成的任务
-    
-    删除所有已完成、失败或停止的任务记录
-    """
     try:
         completed_tasks = []
         for task_id, task_info in list(running_tasks.items()):
