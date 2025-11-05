@@ -128,13 +128,18 @@ async def start_inference(
                      "**3**: 事故检测 *(自动触发车辆计数)*<br>"
                      "**4**: 车牌识别检测<br>"
                      "**5**: 车辆检测<br>"
-                     "**6**: 红外行人检测",
-            ge=0, le=6,
+                     "**6**: 红外行人检测<br>"
+                     "**7**: 人脸提取",
+            ge=0, le=7,
             examples=[
                 {"value": 0, "description": "电梯摩托车检测"},
                 {"value": 1, "description": "消防通道占用检测"},
                 {"value": 2, "description": "火点检测"},
-                {"value": 3, "description": "事故检测"}
+                {"value": 3, "description": "事故检测"},
+                {"value": 4, "description": "车牌识别检测"},
+                {"value": 5, "description": "车辆检测"},
+                {"value": 6, "description": "红外行人检测"},
+                {"value": 7, "description": "人脸提取"}
             ]
         ),
         pixel_position: Optional[str] = Form(
@@ -170,11 +175,11 @@ async def start_inference(
                 "data": {}
             }
 
-        if model_index not in [0, 1, 2, 3,4,5,6]:
+        if model_index not in [0, 1, 2, 3,4,5,6,7]:
             return {
                 "status": "error",
                 "code": 400,
-                "msg": "模型索引必须是 0, 1, 2, 3,4,5,6 中的一个",
+                "msg": "模型索引必须是 0, 1, 2, 3,4,5,6,7 中的一个",
                 "data": {}
             }
 
@@ -303,13 +308,18 @@ async def start_inference_image(
                      "**3**: 事故检测<br>"
                      "**4**: 车牌识别检测 *(含OCR)*<br>"
                      "**5**: 车辆检测<br>"
-                     "**6**: 红外行人检测",
-            ge=0, le=6,
+                     "**6**: 红外行人检测<br>"
+                     "**7**: 人脸提取",
+            ge=0, le=7,
             examples=[
                 {"value": 0, "description": "电梯摩托车检测"},
                 {"value": 1, "description": "消防通道占用检测"},
                 {"value": 2, "description": "火点检测"},
-                {"value": 4, "description": "车牌识别检测"}
+                {"value": 3, "description": "事故检测"},
+                {"value": 4, "description": "车牌识别检测"},
+                {"value": 5, "description": "车辆检测"},
+                {"value": 6, "description": "红外行人检测"},
+                {"value": 7, "description": "人脸提取"}
             ]
         ),
 ):

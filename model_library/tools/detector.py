@@ -10,10 +10,7 @@ from collections import defaultdict
 
 from shapely.geometry import Polygon
 
-from ..model.base_model import BaseModel
-from ..model.track_fireland import TrackFireland
-from ..model.track_accident import TrackAccident
-from ..model.plate_model import PlateModel
+from ..model.model_loader import ModelLoader
 from ..tools.utils import Config
 from ..client.mqtt_client import MQTTClient
 from ..client.minio_client import MinioClient
@@ -103,30 +100,8 @@ class Detector:
 
     def load_model(self):
         try:
-            model_path = self.config.model_list[self.model_index]['model_path']
-            log_task_debug(f"加载模型文件 - 任务ID:{self.task_id}, 路径:{model_path}")
-
-            if self.model_index == 0:
-                model = BaseModel(model_path)
-            elif self.model_index == 1:
-                model = TrackFireland(model_path)
-            elif self.model_index == 2:
-                model = BaseModel(model_path)
-            elif self.model_index == 3:
-                model = TrackAccident(model_path)
-            elif self.model_index == 4:
-                ocr_model_path = self.config.model_list[self.model_index]['ocr_model_path']
-                model = PlateModel(model_path,ocr_model_path)
-            elif self.model_index == 5:
-                model = BaseModel(model_path)
-            elif self.model_index == 6:
-                model = BaseModel(model_path)
-            elif self.model_index == 7:
-                model = BaseModel(model_path)
-            else:
-                log_task_error(f"无效的模型索引 - 任务ID:{self.task_id}, 模型索引:{self.model_index}")
-                raise ValueError(f"Invalid model index: {self.model_index}")
-
+            loader = ModelLoader()
+            model = loader.load_model(self.model_index, task_id=self.task_id)
             log_task_debug(f"模型加载成功 - 任务ID:{self.task_id}")
             return model
         except Exception as e:

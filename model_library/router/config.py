@@ -42,8 +42,7 @@ def get_model_config() -> Dict[str, Any]:
     Raises:
         HTTPException: 当配置文件不存在或格式错误时
     """
-    config = Config()
-    model_list = config.model_list
+    model_list = Config().model_list
     return JSONResponse(
         content=model_list,
         status_code=200,

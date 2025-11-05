@@ -8,10 +8,7 @@ from typing import Any
 from PIL import Image
 from shapely.geometry import Polygon
 
-# from ..model.base_model import BaseModel
-from model_library.model.base_model import BaseModel
-from model_library.model.plate_model import PlateModel
-from model_library.model.car_model import CarModel
+from model_library.model.model_loader import model_loader
 from model_library.tools.utils import Config
 from model_library.tools.logger import log_task, log_task_error, log_task_debug
 
@@ -29,22 +26,17 @@ class Reasoner:
             return  # 避免重复初始化
         log_task_debug("初始化图像推理器 - 开始加载所有模型")
         self.config = Config()
+        self.loader = model_loader
         self._load_model()
         self._initialized = True
         log_task("图像推理器初始化完成 - 所有模型加载成功")
 
     def _load_model(self):
         try:
-            self.model_0 = BaseModel(self.config.model_list[0]["model_path"])
-            self.model_1 = BaseModel(self.config.model_list[1]["model_path"])
-            self.model_2 = BaseModel(self.config.model_list[2]["model_path"])
-            self.model_3 = BaseModel(self.config.model_list[3]["model_path"])
-            self.model_4 = PlateModel(self.config.model_list[4]["model_path"],
-                                      self.config.model_list[4]["ocr_model_path"])
-            # self.model_5 = BaseModel(self.config.model_list[5]["model_path"])
-            self.model_5 = CarModel(self.config.model_list[5]["model_path"])
-            self.model_6 = BaseModel(self.config.model_list[6]["model_path"])
-            self.model_7 = BaseModel(self.config.model_list[7]["model_path"])
+            # 按配置使用反射式加载（for 循环批量加载，保持属性名 model_{index} 兼容）
+            for idx in sorted(self.config.model_list.keys()):
+                model = self.loader.load_model(idx)
+                setattr(self, f"model_{idx}", model)
 
         except Exception as e:
             log_task_error(f"模型加载失败 - 错误:{str(e)}")
