@@ -134,8 +134,16 @@ class PlateModel(BaseModel):
             return results_dict
 
         for result in results:
-            if result is None or len(result) == 0:
+            if result is None:
                 continue
+
+            # 检查是否有检测结果
+            if not hasattr(result, 'boxes') or result.boxes is None:
+                continue
+
+            if len(result) == 0:
+                continue
+
             ocr_data = self._plate_ocr_yolo(result)
             if not ocr_data:
                 continue

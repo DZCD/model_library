@@ -107,8 +107,14 @@ class SAHIPlateDetector:
               f"保留 {len(filtered_detections)} 个 (置信度≥{final_confidence_threshold})")
 
         if not filtered_detections:
-            # 返回空结果
-            return [Results(orig_img=original_image, path=None, names={0: 'license plate'})]
+            # 返回空结果，简化处理以避免Boxes构造问题
+            # 创建一个没有boxes的Results，让post_process方法正确处理空结果
+            results = Results(
+                orig_img=original_image,
+                path=None,
+                names={0: 'license plate', 1: 'license plate_double'}
+            )
+            return [results]
 
         # 创建检测结果数据
         detections = []

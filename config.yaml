@@ -47,7 +47,7 @@ model:
     classes: [0,1]
     imgsz: 0  # 0 代表模型不采用原图大小
     # SAHI配置（可选）
-    enable_sahi: true  # 是否启用SAHI切片推理（临时禁用以测试）
+    enable_sahi: true  # 是否启用SAHI切片推理
     sahi_config:
       initial_confidence: 0.15  # SAHI初始检测置信度
       device: null  # 自动选择设备，可指定"cuda:0"或"cpu"

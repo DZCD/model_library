@@ -6,8 +6,8 @@ from PIL import Image
 from PIL import ImageDraw
 
 save_img_path = f"detect_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
-image_url = "https://img0.baidu.com/it/u=4206992412,806806134&fm=253&fmt=auto&app=138&f=JPEG?w=500&h=675"
-
+image_url = "http://113.105.137.161:10019/cloud-bucket/wayline/1eae4b97-665e-4ef0-a978-59d919d64a57/DJI_202511051555_002_1eae4b97-665e-4ef0-a978-59d919d64a57-flyto/DJI_20251105155858_0002_V.jpeg"
+model_index = 4
 
 def load_image(img_url) -> Image.Image:
     """加载原始图片，不进行预处理"""
@@ -68,7 +68,7 @@ if __name__ == "__main__":
 
     data = {
         "image_path": image_url,
-        "model_index": "7"  # 修改为有效的模型索引
+        "model_index": model_index  # 修改为有效的模型索引
     }
 
     print("正在调用API进行推理...")
