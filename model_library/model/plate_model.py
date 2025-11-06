@@ -47,7 +47,7 @@ class PlateModel(BaseModel):
         if self.enable_sahi:
             # 使用SAHI切片推理
             results = self.detect_image_with_sahi(
-                image_path=source,
+                source=source,
                 confidence_threshold=conf,
                 verbose=verbose
             )
