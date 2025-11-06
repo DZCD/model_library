@@ -419,11 +419,16 @@ async def get_task_status(
 
     task_info = running_tasks[task_id]
 
-    # 判断当前任务状态  
+    # 判断当前任务状态
     current_status = task_info["status"]
     workflow = task_info["workflow"]
-    if workflow.is_stop_requested() and current_status == "running":
-        current_status = "stopping"
+
+    # 检查workflow是否为None（任务完成后会被设置为None）
+    stop_requested = False
+    if workflow is not None:
+        stop_requested = workflow.is_stop_requested()
+        if stop_requested and current_status == "running":
+            current_status = "stopping"
 
     return {
         "status": "succeed",
@@ -436,7 +441,7 @@ async def get_task_status(
             "model_name": task_info["model_name"],
             "start_time": task_info.get("start_time", ""),
             "error_message": task_info.get("error_message"),
-            "stop_requested": workflow.is_stop_requested()
+            "stop_requested": stop_requested
         }
     }
 

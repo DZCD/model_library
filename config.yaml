@@ -41,16 +41,26 @@ model:
   4:
     model_name: "license plate"
     class_path: "model_library.model.plate_model.PlateModel"
-    model_path: "weight/yolo_license_plate.pt"    # 车牌检测
+    model_path: "weight/best_epoch32_CCPDfintune_baseYOLOv11.pt"    # 车牌检测
     ocr_model_path: "weight/plate_rec_color.pth"    # 车牌ocr
     config: 0.3
     classes: [0,1]
     imgsz: 0  # 0 代表模型不采用原图大小
+    # SAHI配置（可选）
+    enable_sahi: true  # 是否启用SAHI切片推理（临时禁用以测试）
+    sahi_config:
+      initial_confidence: 0.15  # SAHI初始检测置信度
+      device: null  # 自动选择设备，可指定"cuda:0"或"cpu"
+      slice_params:  # 可选的自定义切片参数，如为空则自动确定
+        # slice_height: 512
+        # slice_width: 512
+        # overlap_height_ratio: 0.25
+        # overlap_width_ratio: 0.25
 
   5:
     model_name: "car"
     class_path: "model_library.model.car_model.CarModel"
-    model_path: "weight/yolo_visdrone.pt"    # 车牌检测
+    model_path: "weight/yolo_visdrone.pt"    # 车辆检测
     config: 0.5
     classes: [3,4,5,8]
     imgsz: 0  # 0 代表模型不采用原图大小
