@@ -1,16 +1,31 @@
 
-import torch
 from ultralytics.engine.results import Results
 
 from .base_model import BaseModel, device
-from .ocr_model import get_split_merge, image_processing, decodePlate, color, plateName, init_model
-from ..utils.sahi_detector import SAHIPlateDetector
+from .ocr_provider import create_ocr_provider
+from model_library.tools.logger import log_task_error
+from model_library.utils.sahi_detector import SAHIPlateDetector
+from model_library.tools.utils import Config
 
 
 class PlateModel(BaseModel):
-    def __init__(self, model_path, ocr_model_path, enable_sahi=False, sahi_config=None):
+    def __init__(self, model_path, ocr_model_path=None, enable_sahi=False, sahi_config=None, ocr_provider="local"):
         super().__init__(model_path)
-        self.ocr_model = init_model(ocr_model_path, is_color=True)
+        self.config = Config()
+        self.ocr_provider_name = ocr_provider or "local"
+        modelscope_conf = self.config.config.get("modelscope", {})
+
+        try:
+            self.ocr_provider = create_ocr_provider(
+                self.ocr_provider_name,
+                ocr_model_path=ocr_model_path,
+                modelscope_conf=modelscope_conf,
+            )
+        except Exception as exc:
+            log_task_error(f"初始化 OCR Provider 失败: {exc}")
+            raise
+
+        print(f"使用 {self.ocr_provider_name} OCR 识别")
 
         # SAHI配置 - 确保是字典类型
         self.enable_sahi = enable_sahi
@@ -159,32 +174,26 @@ class PlateModel(BaseModel):
         boxes_conf = yolo_result.boxes.conf.tolist()
         ori_image_arr = yolo_result.orig_img
         result_data = []
+
+        height, width = ori_image_arr.shape[:2]
+
         for i, boxes in enumerate(boxes_xyxy):
-
-            rect = [int(x) for x in boxes]
-            # 先忽略双层的判断,影像前处理
-            roi_img = ori_image_arr[rect[1]: rect[3], rect[0]: rect[2]]
-            # 如果是双层要额外进行处理
-            if int(cls[i]) == 1:
-                roi_img = get_split_merge(roi_img)
-            input = image_processing(roi_img)
-            preds, color_preds = self.ocr_model(input)
-            color_preds = torch.softmax(color_preds, dim=-1)
-            color_conf, color_index = torch.max(color_preds, dim=-1)
-            color_conf = color_conf.item()
-            preds = torch.softmax(preds, dim=-1)
-            prob, index = preds.max(dim=-1)
-            index = index.view(-1).detach().cpu().numpy()
-            prob = prob.view(-1).detach().cpu().numpy()
-
-            # preds=preds.view(-1).detach().cpu().numpy()
-            newPreds, new_index = decodePlate(index)
-            prob = prob[new_index]
-            plate = ""
-            for str_i in newPreds:
-                plate += plateName[str_i]
             x1, y1, x2, y2 = boxes
-            hbb_points = [x1, y1, x2, y1, x2, y2, x1, y2]
+            x1_int = int(max(0, min(width - 1, x1)))
+            y1_int = int(max(0, min(height - 1, y1)))
+            x2_int = int(max(0, min(width - 1, x2)))
+            y2_int = int(max(0, min(height - 1, y2)))
+
+            if x2_int <= x1_int or y2_int <= y1_int:
+                continue
+
+            roi_img = ori_image_arr[y1_int:y2_int, x1_int:x2_int].copy()
+            is_double = int(cls[i]) == 1
+
+            plate_text, extra = self.ocr_provider.recognize(roi_img, is_double_layer=is_double)
+            plate_text = (plate_text or "").strip()
+
+            hbb_points = [boxes[0], boxes[1], boxes[2], boxes[1], boxes[2], boxes[3], boxes[0], boxes[3]]
 
             box_params = {
                 "x": boxes_xywh[i][0],
@@ -197,13 +206,13 @@ class PlateModel(BaseModel):
                 "track_id": "unknown",
                 "classed": cls[i],
                 "className": "license plate",
-                "text": plate,
-                "plate_status": True if len(plate) in [7, 8] else False,
-
+                "text": plate_text,
+                "plate_status": True if plate_text and len(plate_text) in [7, 8] else False,
             }
+
+            if extra:
+                box_params["ocr_extra"] = extra
+
             result_data.append(box_params)
-        # 将识别到的车牌位置以及字符串写入原图
-        # plate_texts = [f"{c}:{p}" for c, p in zip(data["color"], data["plate"])]
-        # plate_texts = [f"{p}" for p in ocr_data["plate"]]
 
         return result_data

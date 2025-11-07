@@ -43,6 +43,7 @@ model:
     class_path: "model_library.model.plate_model.PlateModel"
     model_path: "weight/best_epoch32_CCPDfintune_baseYOLOv11.pt"    # 车牌检测
     ocr_model_path: "weight/plate_rec_color.pth"    # 车牌ocr
+    ocr_provider: "local"  # 可选: local, modelscope
     config: 0.3
     classes: [0,1]
     imgsz: 0  # 0 代表模型不采用原图大小
@@ -98,3 +99,8 @@ minio:
   access-key: "zkyy"
   secret-key: "Zkyy2021"
   bucket: "cloud-bucket"
+
+modelscope:
+  api_key: "ms-12f2520f-7ec4-4a83-b40b-6bcd2ebae367"
+  base_url: "https://api-inference.modelscope.cn/v1/"
+  model: "Qwen/Qwen3-VL-30B-A3B-Instruct"
