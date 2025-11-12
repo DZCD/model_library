@@ -29,8 +29,8 @@ model:
   3:
     model_name: "accident"
     class_path: "model_library.model.track_accident.TrackAccident"
-    model_path: "weight/accident_with_person_new1111night.pt"    # 事故检测_20251112
-    # model_path: "weight/best_threeclass_baseyolox.pt"    # 事故检测_20251112
+    # model_path: "weight/accident_with_person_new1111night.pt"    # 事故检测_20251112
+    model_path: "weight/best_accident_baseyolox.pt"    # 事故检测_20251112
     # model_path: "weight/accident_with_person.pt"    # 事故检测_20251111
     # model_path: "weight/yolo_accident_obb_v2.pt"    # 事故检测_20251023
     # model_path: "weight/yolo_accident_obb_havegame_nomoni.pt"    # 事故检测_20251024
@@ -40,8 +40,8 @@ model:
     imgsz: 1  # 1 代表模型采用原图大小
     # 分类别置信度阈值配置
     class_confidence:
-      accident: 0.4    # 事故检测阈值 (class=0)
-      pedestrian: 0.4  # 行人检测阈值 (class=1)
+      accident: 0.5    # 事故检测阈值 (class=0)
+      pedestrian: 0.5  # 行人检测阈值 (class=1)
     # 事故验证策略配置
     verification_strategy: "overlap"  # 可选: overlap, distance, combined, none
     verification_config:

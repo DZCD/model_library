@@ -123,8 +123,8 @@ class Detector:
             timestamp_str: 时间戳字符串
         """
         try:
-            # 保存图像
-            infer_image = result.plot()
+            # 使用策略工厂的绘制方法，只绘制验证后的真实事故框，不绘制行人框
+            infer_image = self.verification_manager.plot_verified_accidents_only(result, [accident_item])
             _, _ = self.minio_client.upload_image_array(
                 image_array=infer_image,
                 object_name=object_name,

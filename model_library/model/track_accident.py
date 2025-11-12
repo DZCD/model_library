@@ -66,3 +66,49 @@ class TrackAccident(BaseModel):
                 }
                 results_dict.append(box_params)
         return results_dict
+
+    def post_process_accidents_only(self,results:Results)->list:
+        """只返回事故类别的检测结果，用于绘制验证后的真实事故框"""
+        results_dict = []
+        for result in results:
+            if len(result) == 0:
+                continue
+            obb = result.obb
+            if not obb:
+                continue
+            names = result.names
+            xywhr = obb.xywhr.tolist()
+            cls = obb.cls.tolist()
+            conf = obb.conf.tolist()
+            try:
+                track_id = obb.id.tolist()
+            except:
+                track_id =  f"unknown"
+
+            for i,box in enumerate(xywhr):
+                class_id = int(cls[i])
+                confidence = conf[i]
+
+                # 只处理事故类别 (class_id=0)
+                if class_id != 0:
+                    continue  # 跳过非事故类别
+
+                # 应用事故类别阈值过滤
+                threshold = self.class_thresholds.get(class_id, 0.5)
+                if confidence < threshold:
+                    continue  # 跳过低于阈值的结果
+
+                box_params = {
+                    "x":box[0],
+                    "y":box[1],
+                    "width":box[2],
+                    "height":box[3],
+                    "rotation":box[4],
+                    "score":confidence,
+                    "track_id":track_id[i] if isinstance(track_id, list) else track_id,
+                    "classed":class_id,
+                    "className":names[class_id],
+                    "text":""
+                }
+                results_dict.append(box_params)
+        return results_dict

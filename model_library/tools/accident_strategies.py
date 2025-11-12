@@ -1,5 +1,7 @@
 """事故验证策略模块 - 提供多种事故验证策略"""
 import math
+import cv2
+import numpy as np
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any
 from shapely.geometry import Polygon
@@ -228,6 +230,68 @@ class AccidentVerificationManager:
             return False
         except Exception:
             return False
+
+    def plot_verified_accidents_only(self, result, verified_accident_items):
+        """
+        只绘制验证后的真实事故框，不绘制行人框
+
+        Args:
+            result: YOLO检测结果
+            verified_accident_items: 验证后的事故检测项列表
+
+        Returns:
+            numpy.ndarray: 绘制后的图像
+        """
+        try:
+            from ultralytics.utils.plotting import colors
+
+            # 复制原始图像
+            plot_img = result.orig_img.copy()
+
+            # 只绘制验证后的事故框
+            for accident_item in verified_accident_items:
+                # 获取事故框参数
+                x, y, w, h, angle = accident_item['x'], accident_item['y'], accident_item['width'], accident_item['height'], accident_item['rotation']
+                track_id = accident_item.get('track_id', 'unknown')
+                confidence = accident_item['score']
+
+                # 计算旋转矩形的四个角点
+                cos_a, sin_a = np.cos(angle), np.sin(angle)
+                corners = np.array([[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]])
+                rotated_corners = corners @ np.array([[cos_a, -sin_a], [sin_a, cos_a]]).T + np.array([x, y])
+
+                # 转换为整数坐标
+                points = rotated_corners.astype(int)
+
+                # 选择颜色 - 使用红色表示事故
+                color = colors(0, True)  # class_id=0 对应事故类别
+
+                # 绘制旋转矩形
+                cv2.polylines(plot_img, [points], True, color, 2)
+
+                # 绘制标签背景
+                label = f"accident {confidence:.2f} id:{track_id}"
+                (label_width, label_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+
+                # 确定标签位置（使用矩形左上角）
+                label_x, label_y = int(points[0][0]), int(points[0][1]) - 10
+
+                # 确保标签不超出图像边界
+                label_x = max(0, min(label_x, plot_img.shape[1] - label_width))
+                label_y = max(label_height, min(label_y, plot_img.shape[0] - 5))
+
+                # 绘制标签背景
+                cv2.rectangle(plot_img, (label_x, label_y - label_height),
+                             (label_x + label_width, label_y + 5), color, -1)
+
+                # 绘制标签文字
+                cv2.putText(plot_img, label, (label_x, label_y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+            return plot_img
+        except Exception as e:
+            # 如果绘制失败，返回原图
+            return result.orig_img.copy()
 
     def get_strategy_info(self) -> Dict[str, Any]:
         """获取当前策略信息"""
