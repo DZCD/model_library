@@ -29,13 +29,31 @@ model:
   3:
     model_name: "accident"
     class_path: "model_library.model.track_accident.TrackAccident"
-    model_path: "weight/yolo_accident_obb.pt"    # 事故检测
+    model_path: "weight/accident_with_person_new1111night.pt"    # 事故检测_20251112
+    # model_path: "weight/best_threeclass_baseyolox.pt"    # 事故检测_20251112
+    # model_path: "weight/accident_with_person.pt"    # 事故检测_20251111
     # model_path: "weight/yolo_accident_obb_v2.pt"    # 事故检测_20251023
     # model_path: "weight/yolo_accident_obb_havegame_nomoni.pt"    # 事故检测_20251024
-    classes: [0]
-    config: 0.75
+    classes: [0, 1]
+    config: 0.4  # 通用置信度阈值（作为后备）
     time_step: 60  # 消息推送的间隔
     imgsz: 1  # 1 代表模型采用原图大小
+    # 分类别置信度阈值配置
+    class_confidence:
+      accident: 0.4    # 事故检测阈值 (class=0)
+      pedestrian: 0.4  # 行人检测阈值 (class=1)
+    # 事故验证策略配置
+    verification_strategy: "overlap"  # 可选: overlap, distance, combined, none
+    verification_config:
+      # 面积重叠策略配置 (overlap策略使用)
+      overlap_threshold: 0.3  # 重叠面积阈值，默认0.5
+
+      # 距离策略配置 (distance策略使用)
+      distance_threshold: 200  # 距离阈值（像素），默认200
+      use_center_distance: true  # 是否使用中心点距离，false使用边界框最小距离
+
+      # 联合策略配置 (combined策略使用)
+      require_both: false  # 是否需要同时满足重叠和距离条件，false表示满足任一即可
 
 
   4:
@@ -43,7 +61,7 @@ model:
     class_path: "model_library.model.plate_model.PlateModel"
     model_path: "weight/best_epoch32_CCPDfintune_baseYOLOv11.pt"    # 车牌检测
     ocr_model_path: "weight/plate_rec_color.pth"    # 车牌ocr
-    ocr_provider: "local"  # 可选: local, modelscope
+    ocr_provider: "modelscope"  # 可选: local, modelscope
     config: 0.3
     classes: [0,1]
     imgsz: 0  # 0 代表模型不采用原图大小

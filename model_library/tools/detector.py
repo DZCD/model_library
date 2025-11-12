@@ -16,6 +16,7 @@ from ..client.mqtt_client import MQTTClient
 from ..client.minio_client import MinioClient
 from .reasoner import reasoner_single
 from .logger import log_task, log_task_error, log_task_debug
+from .accident_strategies import AccidentStrategyFactory
 
 BeiJingTime = ZoneInfo("Asia/Shanghai")
 
@@ -43,8 +44,19 @@ class Detector:
         self.time_step = self.config.model_list[self.model_index].get('time_step', 60)  # 推送间隔
         self.topic = self.get_topic()
 
+        # 初始化事故验证管理器（仅用于模型3）
+        self.verification_manager = None
+        self.model_index_3 = self.model_index == 3
+
         log_task_debug(f"开始加载模型 - 任务ID:{task_id}, 模型:{self.model_name}")
         self.model = self.load_model()
+
+        # 在模型加载后初始化完整的事故识别系统（仅用于模型3）
+        if self.model_index_3:
+            self.verification_manager = AccidentStrategyFactory.create_complete_accident_system(
+                self.model_index, self.config, self.model, task_id
+            )
+
         log_task(f"检测器初始化完成 - 任务ID:{task_id}, 模型:{self.model_name}, MQTT主题:{self.topic}")
 
         # 添加停止控制机制
@@ -52,6 +64,7 @@ class Detector:
         self.stream_timeout = 180  # 3分钟超时
         self._stop_event = asyncio.Event()
 
+    
     def __del__(self):
         """析构函数，用于跟踪对象何时被真正销毁"""
         Detector._instance_count -= 1
@@ -97,6 +110,50 @@ class Detector:
                     intersecting_indices.append(i)
         
         return intersecting_indices
+
+    async def _save_and_publish_accident(self, result, accident_item, object_name, ori_img_shape, timestamp_str):
+        """
+        保存事故图像并发布MQTT消息
+
+        Args:
+            result: YOLO检测结果
+            accident_item: 事故检测项
+            object_name: 存储对象名
+            ori_img_shape: 原始图像尺寸
+            timestamp_str: 时间戳字符串
+        """
+        try:
+            # 保存图像
+            infer_image = result.plot()
+            _, _ = self.minio_client.upload_image_array(
+                image_array=infer_image,
+                object_name=object_name,
+                image_format='jpg',
+                quality=85
+            )
+
+            # 构建MQTT消息
+            mqtt_message = {"imageInfo": {}}
+            mqtt_message["imageInfo"]["imageId"] = ""
+            mqtt_message["imageInfo"]["dataType"] = "url"
+            mqtt_message["imageInfo"]["imageUrl"] = object_name
+            mqtt_message["imageInfo"]["data"] = ""
+            mqtt_message["imageInfo"]["objNum"] = len(result)
+            mqtt_message["imageInfo"]["boxs"] = accident_item
+            mqtt_message["imageInfo"]["imageWidth"] = ori_img_shape[0]
+            mqtt_message["imageInfo"]["imageHeight"] = ori_img_shape[1]
+            mqtt_message["imageInfo"]["imageSize"] = ""
+            mqtt_message["imageInfo"]["task_id"] = self.task_id
+            mqtt_message["imageInfo"]["timestamp"] = timestamp_str
+
+            # 发送MQTT消息
+            log_task_debug(f"发送事故MQTT消息 - 任务ID:{self.task_id}, 主题:{self.topic}")
+            mqtt_success = self.mqtt_client.publish_message(self.topic, mqtt_message)
+            log_task_debug(f"MQTT发送结果 - 任务ID:{self.task_id}, 成功:{mqtt_success}")
+
+        except Exception as e:
+            log_task_error(f"事故保存和发布失败 - 任务ID:{self.task_id}, 错误:{str(e)}")
+
 
     def load_model(self):
         try:
@@ -227,7 +284,7 @@ class Detector:
         if self.model_index == 1:
             results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, imgsz=(height, width),
                                              verbose=False, conf=self.model_conf)
-        elif self.model_index == 3:
+        elif self.model_index_3:
             results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, classes=self.classes,
                                              imgsz=(height, width), verbose=False, conf=self.model_conf)
         else:
@@ -316,7 +373,7 @@ class Detector:
                         # 重置连续未出现帧数
                         consecutive_missing_frames[track_id] = 0
 
-        elif self.model_index == 3:
+        elif self.model_index_3:
             # 事故检测模型，要补充车辆识别
             accident_id = []
 
@@ -337,7 +394,28 @@ class Detector:
                 ori_img_shape = result.orig_shape
                 if not results_list:
                     continue
+                # 分离不同类别的检测结果
+                accident_boxes = []  # class=0 (accident)
+                pedestrian_boxes = []  # class=1 (pedestrian)
+
                 for result_item in results_list:
+                    class_name = result_item.get('className', '')
+                    if class_name == 'accident':  # class=0
+                        accident_boxes.append(result_item)
+                    elif class_name == 'pedestria':  # class=1
+                        pedestrian_boxes.append(result_item)
+
+                # 如果没有检测到事故，跳过
+                if not accident_boxes:
+                    continue
+
+                # 使用验证管理器获取通过验证的事故
+                verified_indices = self.verification_manager.get_verified_accidents(accident_boxes, pedestrian_boxes)
+                log_task_debug(f"事故验证完成 - 任务ID:{self.task_id}, 总事故数:{len(accident_boxes)}, 验证通过数:{len(verified_indices)}")
+
+                # 处理所有通过验证的事故
+                for idx in verified_indices:
+                    result_item = accident_boxes[idx]
                     current_timestamp = datetime.now(BeiJingTime)
                     date_str = current_timestamp.strftime("%Y-%m-%d")
                     timestamp_str = current_timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")
@@ -346,61 +424,41 @@ class Detector:
                     if id in accident_id:
                         log_task_debug(f"重复事故事件，跳过上报 - 任务ID:{self.task_id}, 事件ID:{id}")
                         continue
-                    log_task(f"检测到新事故事件 - 任务ID:{self.task_id}, 事件ID:{id}")
+
+                    log_task(f"检测到验证后的真实事故 - 任务ID:{self.task_id}, 事件ID:{id}")
                     object_name = f"ai/{date_str}/{self.model_name}/{current_timestamp}_{id}.jpg"
                     log_task_debug(f"事故图片保存路径 - 任务ID:{self.task_id}, 路径:{object_name}")
                     accident_id.append(id)
 
-                    # 这里补充一个事故车辆数量的识别
+                    # 事故车辆数量识别
                     car_time_start = time.time()
-                    ori_image = result.orig_img
+                    car_result = await reasoner_single.infer_image(result.orig_img, 5, post_msg=False)
+                    accident_obb = [result_item['x'], result_item['y'], result_item['width'],
+                                  result_item['height'], result_item['rotation']]
 
-
-                    # 优化后方案
-                    car_result = await reasoner_single.infer_image(ori_image, 5, post_msg=False)
-                    accident_obb = [result_item['x'], result_item['y'], result_item['width'], result_item['height'],
-                                    result_item['rotation']]
-                    if  len(car_result[0]) == 0:  #汽车识别没有识别到汽车
+                    if len(car_result[0]) == 0:  # 没有识别到车辆
+                        log_task_debug(f"事故现场无车辆，跳过上报 - 任务ID:{self.task_id}, 事件ID:{id}")
                         continue
+
                     car_result_obb = car_result[0].obb.xyxyxyxy.tolist()
                     inter_index = self.intersection_judgment(accident_obb, car_result_obb)
                     accident_car = len(inter_index)
-                    accident_obb_list = [car_result_obb[i] for i in inter_index]
-                    accident_obb_list =[[coord for point in shape for coord in point] for shape in accident_obb_list] #配合之前版本，将[[x,y],[x,y],[x,y],[x,y]]改为 [x,y,x,y,x,y,x,y]
 
+                    if accident_car == 0:
+                        log_task_debug(f"事故现场无车辆，跳过上报 - 任务ID:{self.task_id}, 事件ID:{id}")
+                        continue
+
+                    accident_obb_list = [car_result_obb[i] for i in inter_index]
+                    # 转换格式：[[x,y],[x,y],[x,y],[x,y]] -> [x,y,x,y,x,y,x,y]
+                    accident_obb_list = [[coord for point in shape for coord in point] for shape in accident_obb_list]
+
+                    car_time_end = time.time()
                     result_item['accident_car_count'] = accident_car
                     result_item['accident_car_xyxy'] = accident_obb_list
-                    car_time_end = time.time()
-                    if accident_car == 0:
-                        continue
-                    log_task_debug(
-                        f"事故车辆识别完成 - 任务ID:{self.task_id}, 事件ID:{id}, 车辆数:{accident_car}, 耗时:{car_time_end - car_time_start:.3f}秒")
+                    log_task_debug(f"事故车辆识别完成 - 任务ID:{self.task_id}, 事件ID:{id}, 车辆数:{accident_car}, 耗时:{car_time_end - car_time_start:.3f}秒")
 
-                    infer_image = result.plot()
-                    _, _ = self.minio_client.upload_image_array(
-                        image_array=infer_image,
-                        object_name=object_name,
-                        image_format='jpg',
-                        quality=85
-                    )
-
-                    mqtt_message = {"imageInfo": {}}
-                    mqtt_message["imageInfo"]["imageId"] = ""
-                    mqtt_message["imageInfo"]["dataType"] = "url"
-                    mqtt_message["imageInfo"]["imageUrl"] = object_name
-                    mqtt_message["imageInfo"]["data"] = ""
-                    mqtt_message["imageInfo"]["objNum"] = len(result)
-                    mqtt_message["imageInfo"]["boxs"] = result_item
-                    mqtt_message["imageInfo"]["imageWidth"] = ori_img_shape[0]
-                    mqtt_message["imageInfo"]["imageHeight"] = ori_img_shape[1]
-                    mqtt_message["imageInfo"]["imageSize"] = ""
-                    mqtt_message["imageInfo"]["task_id"] = self.task_id
-                    mqtt_message["imageInfo"]["timestamp"] = timestamp_str
-                    # 发送到MQTT主题: {类别名}
-                    print(mqtt_message)
-                    log_task_debug(f"发送事故MQTT消息 - 任务ID:{self.task_id}, 主题:{self.topic}")
-                    mqtt_success = self.mqtt_client.publish_message(self.topic, mqtt_message)
-                    log_task_debug(f"发送事故MQTT消息 - 任务ID:{self.task_id}, mqtt消息:{mqtt_message}")
+                    # 保存和上报事故信息
+                    await self._save_and_publish_accident(result, result_item, object_name, ori_img_shape, timestamp_str)
                 accident_time_end = time.time()
                 log_task_debug(
                     f"事故检测处理完成 - 任务ID:{self.task_id}, 总耗时:{accident_time_end - accident_time_start:.3f}秒")
