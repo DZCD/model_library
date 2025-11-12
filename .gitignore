@@ -10,3 +10,10 @@ __pycache__/
 # Log files
 logs/
 *.log
+
+# Model weight files
+weight/
+*.pt
+*.pth
+*.onnx
+*.engine
