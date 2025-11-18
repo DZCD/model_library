@@ -73,7 +73,7 @@ class BaseModel:
                 names = result.names
                 xywh = boxes.xywh.tolist()
                 xyxy = boxes.xyxy.tolist()
-                xyxy = [[[x1, y1, x2, y1, x2, y2, x1, y2]] for x1, y1, x2, y2 in xyxy]
+                xyxy = [[x1, y1, x2, y1, x2, y2, x1, y2] for x1, y1, x2, y2 in xyxy]
                 cls = boxes.cls.tolist()
                 conf = boxes.conf.tolist()
 
