@@ -68,7 +68,7 @@ class OverlapStrategy(AccidentVerificationStrategy):
             accident_poly = self.box_to_polygon(accident_box)
 
             # 检查与每个行人框的重叠
-            has_overlap = False
+            overlap_count = 0
             for pedestrian_box in pedestrian_boxes:
                 pedestrian_poly = self.box_to_polygon(pedestrian_box)
 
@@ -77,10 +77,10 @@ class OverlapStrategy(AccidentVerificationStrategy):
                 if intersection.area > 0:
                     overlap_ratio = intersection.area / min(accident_poly.area, pedestrian_poly.area)
                     if overlap_ratio >= self.overlap_threshold:
-                        has_overlap = True
-                        break
+                        overlap_count += 1
 
-            if has_overlap:
+            # 需要两个及以上行人才通过验证
+            if overlap_count >= 2:
                 verified_indices.append(i)
 
         return verified_indices
@@ -106,7 +106,7 @@ class DistanceStrategy(AccidentVerificationStrategy):
             accident_center = self.box_center(accident_box)
 
             # 检查与每个行人框的距离
-            has_nearby_pedestrian = False
+            nearby_pedestrian_count = 0
             for pedestrian_box in pedestrian_boxes:
                 if self.use_center_distance:
                     # 使用中心点距离
@@ -122,10 +122,10 @@ class DistanceStrategy(AccidentVerificationStrategy):
                     distance = accident_poly.distance(pedestrian_poly)
 
                 if distance <= self.distance_threshold:
-                    has_nearby_pedestrian = True
-                    break
+                    nearby_pedestrian_count += 1
 
-            if has_nearby_pedestrian:
+            # 需要两个及以上行人才通过验证
+            if nearby_pedestrian_count >= 2:
                 verified_indices.append(i)
 
         return verified_indices
