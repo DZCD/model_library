@@ -195,50 +195,75 @@ class Detector:
         return False
 
     def check_stream_alive(self):
-        """每30秒检查一次RTMP流连接状态"""
+        """监控主推理循环的健康状态（通过最后帧时间而非频繁创建连接）"""
         log_task_debug(f"流健康监控启动 - 任务ID:{self.task_id}")
-        consecutive_failures = 0  # 连续失败次数
-        max_failures = 3  # 连续6次失败(3分钟)就认为断流
+        check_interval = 10  # 每10秒检查一次
+        max_idle_time = 180  # 3分钟无活动则认为流断开
+        
+        # 异常计数机制：允许一定次数的异常，避免误停止
+        consecutive_failures = 0  # 连续异常次数
+        max_failures = 3  # 连续3次异常（每次间隔30秒）才停止任务
+        init_wait_time = 60  # 初始化等待时间（秒）
 
         while not self._should_stop:
-            time.sleep(3)  # 30秒检查一次
+            time.sleep(check_interval)
 
             try:
-                # 实际检查RTMP流连接
-                cap = cv2.VideoCapture(self.video_path)
-
-                if cap.isOpened():
-                    # 尝试读取一帧来确认流是否正常
-                    ret, frame = cap.read()
-                    cap.release()
-
-                    if ret and frame is not None:
-                        log_task_debug(f"流状态正常 - 任务ID:{self.task_id}")
-                        consecutive_failures = 0  # 重置失败计数
+                # 检查主推理循环的最后活动时间，而不是创建新的VideoCapture
+                # 这样可以避免与YOLO竞争RTMP连接
+                if hasattr(self, '_last_frame_time'):
+                    idle_time = time.time() - self._last_frame_time
+                    
+                    if idle_time < max_idle_time:
+                        # 流状态正常，重置失败计数
+                        log_task_debug(f"流状态正常 - 任务ID:{self.task_id}, 闲置时间:{idle_time:.1f}秒")
+                        consecutive_failures = 0  # ✅ 恢复正常时重置计数
                     else:
+                        # 流长时间无响应，累积失败次数
                         consecutive_failures += 1
                         log_task_error(
-                            f"流无法读取帧 - 任务ID:{self.task_id}, 连续失败:{consecutive_failures}/{max_failures}")
+                            f"流长时间无响应 - 任务ID:{self.task_id}, 闲置时间:{idle_time:.1f}秒, "
+                            f"连续异常:{consecutive_failures}/{max_failures}")
+                        
+                        # 达到失败上限，停止任务
+                        if consecutive_failures >= max_failures:
+                            log_task_error(
+                                f"流连续{consecutive_failures}次无响应（{consecutive_failures * check_interval}秒），停止任务 - 任务ID:{self.task_id}")
+                            self._should_stop = True
+                            break
                 else:
-                    consecutive_failures += 1
-                    log_task_error(
-                        f"流连接失败 - 任务ID:{self.task_id}, 连续失败:{consecutive_failures}/{max_failures}")
-                    cap.release()
-
-                # 连续失败超过阈值，标记为断流
-                if consecutive_failures >= max_failures:
-                    log_task_error(
-                        f"流连续失败超限，停止任务 - 任务ID:{self.task_id}, 连续失败:{consecutive_failures}次")
-                    self._should_stop = True
-                    break
+                    # 初始化阶段，还没有开始接收帧
+                    # 检查是否超过初始化等待时间
+                    if hasattr(self, '_monitor_start_time'):
+                        wait_time = time.time() - self._monitor_start_time
+                        if wait_time > init_wait_time:
+                            consecutive_failures += 1
+                            log_task_error(
+                                f"推理循环启动超时 - 任务ID:{self.task_id}, "
+                                f"已等待:{wait_time:.1f}秒, 连续异常:{consecutive_failures}/{max_failures}")
+                            
+                            if consecutive_failures >= max_failures:
+                                log_task_error(
+                                    f"推理循环启动失败，停止任务 - 任务ID:{self.task_id}")
+                                self._should_stop = True
+                                break
+                        else:
+                            log_task_debug(f"等待推理循环启动 - 任务ID:{self.task_id}, 已等待:{wait_time:.1f}秒")
+                    else:
+                        # 记录监控启动时间
+                        self._monitor_start_time = time.time()
+                        log_task_debug(f"等待推理循环启动 - 任务ID:{self.task_id}")
 
             except Exception as e:
                 consecutive_failures += 1
                 log_task_error(
-                    f"流健康监控异常 - 任务ID:{self.task_id}, 错误:{str(e)}, 连续失败:{consecutive_failures}/{max_failures}")
-
+                    f"流健康监控异常 - 任务ID:{self.task_id}, 错误:{str(e)}, "
+                    f"连续异常:{consecutive_failures}/{max_failures}")
+                
+                # 达到失败上限，停止任务
                 if consecutive_failures >= max_failures:
-                    log_task_error(f"流检查异常超限，停止任务 - 任务ID:{self.task_id}")
+                    log_task_error(
+                        f"流健康监控连续{consecutive_failures}次异常，停止任务 - 任务ID:{self.task_id}")
                     self._should_stop = True
                     break
 
@@ -267,7 +292,10 @@ class Detector:
                 vid_stride = vid_stride if vid_stride > 0 else 1
                 width, height = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
                 cap.release()
+                # 等待更长时间，让RTMP服务器完全释放连接并准备好接受新连接
                 log_task(f"视频流连接成功 - 任务ID:{self.task_id}, FPS:{fps}, 分辨率:{int(width)}x{int(height)}")
+                log_task_debug(f"等待3秒让RTMP服务器准备好...")
+                await asyncio.sleep(3)
                 break
             except Exception as e:
                 log_task_error(
@@ -302,6 +330,9 @@ class Detector:
             frame_count = 0
 
             for result in results:
+                # 更新最后帧时间（用于健康监控）
+                self._last_frame_time = time.time()
+                
                 current_timestamp = datetime.now(BeiJingTime)
                 date_str = current_timestamp.strftime("%Y-%m-%d")
                 # 检查停止请求
@@ -378,6 +409,9 @@ class Detector:
             accident_id = []
 
             for result in results:
+                # 更新最后帧时间（用于健康监控）
+                self._last_frame_time = time.time()
+                
                 # 检查停止请求
                 accident_time_start = time.time()
                 if await self.check_stop():
@@ -467,6 +501,9 @@ class Detector:
             # 其他模型，简单逻辑识别即告警
             type_id = []
             for result in results:
+                # 更新最后帧时间（用于健康监控）
+                self._last_frame_time = time.time()
+                
                 print("视频正常推理")
                 current_timestamp = datetime.now(BeiJingTime)
                 date_str = current_timestamp.strftime("%Y-%m-%d")
