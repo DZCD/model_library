@@ -263,30 +263,20 @@ class AccidentVerificationManager:
                 # 转换为整数坐标
                 points = rotated_corners.astype(int)
 
-                # 选择颜色 - 使用红色表示事故
-                color = colors(0, True)  # class_id=0 对应事故类别
+                # 选择颜色 - 使用红色表示事故 (BGR格式: 0, 0, 255)
+                color = (0, 0, 255)  # 必须使用红色，因为VLM提示词中指定了"红色框选区域"
 
                 # 绘制旋转矩形
                 cv2.polylines(plot_img, [points], True, color, 2)
 
-                # 绘制标签背景
-                label = f"accident {confidence:.2f} id:{track_id}"
-                (label_width, label_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
-
-                # 确定标签位置（使用矩形左上角）
-                label_x, label_y = int(points[0][0]), int(points[0][1]) - 10
-
-                # 确保标签不超出图像边界
-                label_x = max(0, min(label_x, plot_img.shape[1] - label_width))
-                label_y = max(label_height, min(label_y, plot_img.shape[0] - 5))
-
-                # 绘制标签背景
-                cv2.rectangle(plot_img, (label_x, label_y - label_height),
-                             (label_x + label_width, label_y + 5), color, -1)
-
-                # 绘制标签文字
-                cv2.putText(plot_img, label, (label_x, label_y),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                # 保存调试图片
+                debug = self.config.get('debug', False)
+                if debug:
+                    import time
+                    debug_path = f"output/debug_accident_{track_id}_{int(time.time())}.jpg"
+                    cv2.imwrite(debug_path, plot_img)
+                    h, w = plot_img.shape[:2]
+                    print(f"调试图片已保存: {debug_path}, 尺寸: {w}x{h}")
 
             return plot_img
         except Exception as e:
@@ -356,7 +346,8 @@ class AccidentStrategyFactory:
             # 合并配置
             complete_config = {
                 **verification_config,
-                'class_confidence': class_confidence
+                'class_confidence': class_confidence,
+                'debug': config.config.get('debug', False)  # 从全局配置中获取debug选项
             }
 
             # 创建管理器

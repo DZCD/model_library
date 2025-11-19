@@ -17,6 +17,7 @@ from ..client.minio_client import MinioClient
 from .reasoner import reasoner_single
 from .logger import log_task, log_task_error, log_task_debug
 from .accident_strategies import AccidentStrategyFactory
+from .vlm_verifier import VLMVerifier
 
 BeiJingTime = ZoneInfo("Asia/Shanghai")
 
@@ -47,6 +48,14 @@ class Detector:
         # 初始化事故验证管理器（仅用于模型3）
         self.verification_manager = None
         self.model_index_3 = self.model_index == 3
+        
+        # 初始化 VLM 验证器 (仅用于模型3)
+        self.vlm_verifier = None
+        if self.model_index_3:
+            model_config = self.config.model_list[self.model_index]
+            vlm_config = model_config.get('vlm_verification', {})
+            global_ms_conf = self.config.config.get('modelscope', {})
+            self.vlm_verifier = VLMVerifier(vlm_config, global_ms_conf)
 
         log_task_debug(f"开始加载模型 - 任务ID:{task_id}, 模型:{self.model_name}")
         self.model = self.load_model()
@@ -310,13 +319,13 @@ class Detector:
                     raise e
 
         if self.model_index == 1:
-            results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, imgsz=(height, width),
+            results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, imgsz=(int(height), int(width)),
                                              verbose=False, conf=self.model_conf)
         elif self.model_index_3:
             results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, classes=self.classes,
-                                             imgsz=(height, width), verbose=False, conf=self.model_conf)
+                                             imgsz=(int(height), int(width)), verbose=False, conf=self.model_conf)
         else:
-            results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, imgsz=(height, width),
+            results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, imgsz=(int(height), int(width)),
                                              verbose=False, conf=self.model_conf)
         if self.model_index == 1:
             # 消防通道占用，需要跟踪占用时间
@@ -490,6 +499,19 @@ class Detector:
                     result_item['accident_car_count'] = accident_car
                     result_item['accident_car_xyxy'] = accident_obb_list
                     log_task_debug(f"事故车辆识别完成 - 任务ID:{self.task_id}, 事件ID:{id}, 车辆数:{accident_car}, 耗时:{car_time_end - car_time_start:.3f}秒")
+
+                    # VLM 多模态验证
+                    if self.vlm_verifier and self.vlm_verifier.enabled:
+                        vlm_start_time = time.time()
+                        # 使用绘制了事故框的图片进行验证，帮助大模型聚焦
+                        vlm_image = self.verification_manager.plot_verified_accidents_only(result, [result_item])
+                        is_confirmed = self.vlm_verifier.verify_accident(vlm_image)
+                        
+                        log_task_debug(f"VLM验证结果: {is_confirmed}, 耗时:{time.time() - vlm_start_time:.3f}秒")
+                        
+                        if not is_confirmed:
+                            log_task(f"VLM未确认事故，跳过上报 - 任务ID:{self.task_id}, 事件ID:{id}")
+                            continue
 
                     # 保存和上报事故信息
                     await self._save_and_publish_accident(result, result_item, object_name, ori_img_shape, timestamp_str)

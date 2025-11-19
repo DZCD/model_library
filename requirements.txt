@@ -37,3 +37,6 @@ paho-mqtt==1.6.1
 
 # 对象存储
 minio==7.1.0 
+
+# Ultralytics requirement
+lap>=0.5.12

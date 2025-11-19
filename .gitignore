@@ -17,3 +17,5 @@ weight/
 *.pth
 *.onnx
 *.engine
+
+output/
