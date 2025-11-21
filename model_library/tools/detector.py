@@ -149,8 +149,8 @@ class Detector:
             mqtt_message["imageInfo"]["data"] = ""
             mqtt_message["imageInfo"]["objNum"] = len(result)
             mqtt_message["imageInfo"]["boxs"] = accident_item
-            mqtt_message["imageInfo"]["imageWidth"] = ori_img_shape[0]
-            mqtt_message["imageInfo"]["imageHeight"] = ori_img_shape[1]
+            mqtt_message["imageInfo"]["imageWidth"] = ori_img_shape[1]
+            mqtt_message["imageInfo"]["imageHeight"] = ori_img_shape[0]
             mqtt_message["imageInfo"]["imageSize"] = ""
             mqtt_message["imageInfo"]["task_id"] = self.task_id
             mqtt_message["imageInfo"]["timestamp"] = timestamp_str
@@ -391,8 +391,8 @@ class Detector:
                             mqtt_message["imageInfo"]["data"] = ""
                             mqtt_message["imageInfo"]["objNum"] = len(result)
                             mqtt_message["imageInfo"]["boxs"] = result_item
-                            mqtt_message["imageInfo"]["imageWidth"] = ori_img_shape[0]
-                            mqtt_message["imageInfo"]["imageHeight"] = ori_img_shape[1]
+                            mqtt_message["imageInfo"]["imageWidth"] = ori_img_shape[1]
+                            mqtt_message["imageInfo"]["imageHeight"] = ori_img_shape[0]
                             mqtt_message["imageInfo"]["imageSize"] = ""
                             mqtt_message["imageInfo"]["message"] = "检测到消防通道被占用"
                             # 发送到MQTT主题: {类别名}
@@ -562,8 +562,8 @@ class Detector:
                     mqtt_message["imageInfo"]["data"] = ""
                     mqtt_message["imageInfo"]["objNum"] = len(result)
                     mqtt_message["imageInfo"]["boxs"] = result_item
-                    mqtt_message["imageInfo"]["imageWidth"] = ori_img_shape[0]
-                    mqtt_message["imageInfo"]["imageHeight"] = ori_img_shape[1]
+                    mqtt_message["imageInfo"]["imageWidth"] = ori_img_shape[1]
+                    mqtt_message["imageInfo"]["imageHeight"] = ori_img_shape[0]
                     mqtt_message["imageInfo"]["imageSize"] = ""
                     mqtt_message["imageInfo"]["task_id"] = self.task_id
                     mqtt_message["imageInfo"]["message"] = "检测到目标"
