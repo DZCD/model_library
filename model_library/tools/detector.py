@@ -539,6 +539,9 @@ class Detector:
                 results_dict = self.model.post_process([result])
                 for result_item in results_dict:
                     id = result_item.get('track_id', None)
+                    if id == "unknown":
+                        log_task_debug(f"跳过未初始化的track_id - 任务ID:{self.task_id}, 目标ID:{id}")
+                        continue
                     # 唯一性判别，模型2，6不需要进行唯一性判别
                     print("--------视频推理中------")
                     if id in type_id:
@@ -573,3 +576,4 @@ class Detector:
                     log_task_debug(f"发送MQTT消息 - 任务ID:{self.task_id}, 目标ID:{id}, 主题:{self.topic}")
                     print(mqtt_message)
                     mqtt_success = self.mqtt_client.publish_message(self.topic, mqtt_message)
+

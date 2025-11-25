@@ -106,9 +106,9 @@ model:
   7:
     model_name: "face_detect"
     class_path: "model_library.model.base_model.BaseModel"
-    model_path: "weight/yolov11n-face.pt"    # 人脸检测
-    config: 0.3
-    conf: 0.3
+    model_path: "weight/yolov11x-face-detection.pt"    # 人脸检测_20251125
+    # model_path: "weight/yolov11n-face.pt"    # 人脸检测
+    config: 0.5
     classes: [0]
     imgsz: 1  # 1 代表模型采用原图大小
 
