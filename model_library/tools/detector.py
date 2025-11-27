@@ -10,7 +10,7 @@ from collections import defaultdict
 
 from shapely.geometry import Polygon
 
-from ..model.model_loader import ModelLoader
+from ..model.model_manager import model_manager
 from ..tools.utils import Config
 from ..client.mqtt_client import MQTTClient
 from ..client.minio_client import MinioClient
@@ -57,8 +57,8 @@ class Detector:
             global_ms_conf = self.config.config.get('modelscope', {})
             self.vlm_verifier = VLMVerifier(vlm_config, global_ms_conf)
 
-        log_task_debug(f"开始加载模型 - 任务ID:{task_id}, 模型:{self.model_name}")
-        self.model = self.load_model()
+        log_task_debug(f"获取模型实例 - 任务ID:{task_id}, 模型:{self.model_name}")
+        self.model = model_manager.get_model(self.model_index, task_id)
 
         # 在模型加载后初始化完整的事故识别系统（仅用于模型3）
         if self.model_index_3:
@@ -164,15 +164,15 @@ class Detector:
             log_task_error(f"事故保存和发布失败 - 任务ID:{self.task_id}, 错误:{str(e)}")
 
 
-    def load_model(self):
-        try:
-            loader = ModelLoader()
-            model = loader.load_model(self.model_index, task_id=self.task_id)
-            log_task_debug(f"模型加载成功 - 任务ID:{self.task_id}")
-            return model
-        except Exception as e:
-            log_task_error(f"模型加载失败 - 任务ID:{self.task_id}, 错误:{str(e)}")
-            raise
+    def get_model_info(self):
+        """获取当前使用的模型信息"""
+        loaded_models = model_manager.get_loaded_models()
+        return {
+            "current_model_index": self.model_index,
+            "current_model_name": self.model_name,
+            "loaded_models": loaded_models,
+            "total_loaded_models": model_manager.get_model_count()
+        }
 
     def get_topic(self):
         current_timestamp = datetime.now()
@@ -212,7 +212,7 @@ class Detector:
         # 异常计数机制：允许一定次数的异常，避免误停止
         consecutive_failures = 0  # 连续异常次数
         max_failures = 3  # 连续3次异常（每次间隔30秒）才停止任务
-        init_wait_time = 60  # 初始化等待时间（秒）
+        init_wait_time = 120  # 初始化等待时间（秒）
 
         while not self._should_stop:
             time.sleep(check_interval)
@@ -317,6 +317,10 @@ class Detector:
                     log_task_error(f"达到最大重试次数，停止任务 - 任务ID:{self.task_id}")
                     self.mqtt_client.disconnect()
                     raise e
+
+        # 设置初始帧时间，避免健康监控误判
+        self._last_frame_time = time.time()
+        log_task_debug(f"设置初始帧时间 - 任务ID:{self.task_id}")
 
         if self.model_index == 1:
             results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, imgsz=(int(height), int(width)),

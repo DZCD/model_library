@@ -16,6 +16,7 @@ import logging
 
 
 from ..tools.detector import Detector
+from ..model.model_manager import model_manager
 from ..tools.reasoner import reasoner_single as reasoner
 
 # 设置日志
@@ -693,5 +694,108 @@ async def cleanup_completed_tasks():
             "status": "error",
             "code": 500,
             "msg": f"清理任务失败: {str(e)}",
+            "data": {}
+        }
+
+
+@router.get(
+    "/models/status",
+    summary="获取模型加载状态",
+    description="""
+    获取当前系统中所有模型的加载状态和缓存信息。
+
+    ## 返回信息
+    - 已加载的模型列表
+    - 模型总数统计
+    - 模型管理器状态
+
+    ## 使用场景
+    - 系统状态监控
+    - 资源使用情况检查
+    - 性能分析和优化
+    - 模型缓存管理
+
+    ## 注意事项
+    - 此接口提供模型缓存状态信息
+    - 可以用于监控系统资源使用
+    - 帮助优化模型加载策略
+    """,
+    response_description="模型加载状态信息"
+)
+async def get_models_status():
+    try:
+        loaded_models = model_manager.get_loaded_models()
+        total_models = model_manager.get_model_count()
+
+        return {
+            "status": "succeed",
+            "code": 200,
+            "msg": "查询成功",
+            "data": {
+                "loaded_models": loaded_models,
+                "total_loaded_models": total_models,
+                "model_manager_status": "active"
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"获取模型状态失败: {str(e)}")
+        return {
+            "status": "error",
+            "code": 500,
+            "msg": f"获取模型状态失败: {str(e)}",
+            "data": {}
+        }
+
+
+@router.delete(
+    "/models/clear/{model_index}",
+    summary="清除指定模型缓存",
+    description="""
+    清除指定模型的缓存，释放内存资源。
+
+    ## 功能说明
+    - 从内存中卸载指定模型
+    - 释放模型占用的GPU/CPU资源
+    - 下次使用时重新加载
+
+    ## 参数说明
+    - model_index: 模型索引（0-7）
+
+    ## 注意事项
+    - 清除后下次使用会重新加载
+    - 正在使用的模型不会被立即卸载
+    - 建议在系统负载低时使用
+    """,
+    response_description="模型缓存清除结果"
+)
+async def clear_model_cache(
+    model_index: int = Path(
+        ...,
+        description="要清除缓存的模型索引",
+        ge=0, le=7
+    )
+):
+    try:
+        model_manager.clear_model(model_index)
+
+        logger.info(f"已清除模型 {model_index} 的缓存")
+
+        return {
+            "status": "succeed",
+            "code": 200,
+            "msg": f"模型 {model_index} 缓存已清除",
+            "data": {
+                "cleared_model_index": model_index,
+                "remaining_models": model_manager.get_model_count()
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"清除模型缓存失败: {str(e)}")
+        return {
+            "status": "error",
+            "code": 500,
+            "msg": f"清除模型缓存失败: {str(e)}",
             "data": {}
         }

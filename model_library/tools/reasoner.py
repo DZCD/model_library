@@ -8,7 +8,7 @@ from typing import Any
 from PIL import Image
 from shapely.geometry import Polygon
 
-from model_library.model.model_loader import model_loader
+from model_library.model.model_manager import model_manager
 from model_library.tools.utils import Config
 from model_library.tools.logger import log_task, log_task_error, log_task_debug
 
@@ -24,23 +24,14 @@ class Reasoner:
     def __init__(self):
         if hasattr(self, '_initialized') and self._initialized:
             return  # 避免重复初始化
-        log_task_debug("初始化图像推理器 - 开始加载所有模型")
+        log_task_debug("初始化图像推理器 - 使用模型管理器")
         self.config = Config()
-        self.loader = model_loader
-        self._load_model()
         self._initialized = True
-        log_task("图像推理器初始化完成 - 所有模型加载成功")
+        log_task("图像推理器初始化完成 - 将按需加载模型")
 
-    def _load_model(self):
-        try:
-            # 按配置使用反射式加载（for 循环批量加载，保持属性名 model_{index} 兼容）
-            for idx in sorted(self.config.model_list.keys()):
-                model = self.loader.load_model(idx)
-                setattr(self, f"model_{idx}", model)
-
-        except Exception as e:
-            log_task_error(f"模型加载失败 - 错误:{str(e)}")
-            raise
+    def _get_model(self, model_index: int):
+        """从模型管理器获取模型实例"""
+        return model_manager.get_model(model_index)
 
     @staticmethod
     def _intersection_judgment(box1, box_list, threshold=0.2):
@@ -100,34 +91,26 @@ class Reasoner:
             
             classes = self.config.model_list[model_index].get("classes", None)
             
-            # 选择模型
-            if model_index == 0:
-                model = self.model_0
-                model_name = "电梯摩托车检测"
-            elif model_index == 1:
-                model = self.model_1
-                model_name = "消防通道占用检测"
-            elif model_index == 2:
-                model = self.model_2
-                model_name = "火点检测"
-            elif model_index == 3:
-                model = self.model_3
-                model_name = "事故检测"
-            elif model_index == 4:
-                model = self.model_4
-                model_name = "车牌识别"
-            elif model_index == 5:
-                model = self.model_5
-                model_name = "车辆检测"
-            elif model_index == 6:
-                model = self.model_6
-                model_name = "红外行人检测"
-            elif model_index == 7:
-                model = self.model_7
-                model_name = "人脸检测"
-            else:
+            # 模型名称映射
+            model_names = {
+                0: "电梯摩托车检测",
+                1: "消防通道占用检测",
+                2: "火点检测",
+                3: "事故检测",
+                4: "车牌识别",
+                5: "车辆检测",
+                6: "红外行人检测",
+                7: "人脸检测"
+            }
+
+            if model_index not in model_names:
                 log_task_error(f"无效的模型索引 - 模型:{model_index}")
                 raise ValueError(f"Invalid model index: {model_index}")
+
+            model_name = model_names[model_index]
+
+            # 从模型管理器获取模型
+            model = self._get_model(model_index)
 
             log_task_debug(f"开始推理 - 模型:{model_name}({model_index})")
 
