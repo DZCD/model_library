@@ -543,6 +543,7 @@ class Detector:
                 results_dict = self.model.post_process([result])
                 for result_item in results_dict:
                     id = result_item.get('track_id', None)
+                    # 过滤掉 track_id 为 "unknown" 的消息（追踪器未初始化）
                     if id == "unknown":
                         log_task_debug(f"跳过未初始化的track_id - 任务ID:{self.task_id}, 目标ID:{id}")
                         continue
