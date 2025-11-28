@@ -18,6 +18,8 @@ from .reasoner import reasoner_single
 from .logger import log_task, log_task_error, log_task_debug
 from .accident_strategies import AccidentStrategyFactory
 from .vlm_verifier import VLMVerifier
+from .video_backend import create_video_capture, VideoBackend, VideoBackendConfig
+from .rtmp_config import auto_rtmp_config
 
 BeiJingTime = ZoneInfo("Asia/Shanghai")
 
@@ -72,6 +74,10 @@ class Detector:
         self._should_stop = False  # 检查任务执行状态。包括自动轮询以及手动停止
         self.stream_timeout = 180  # 3分钟超时
         self._stop_event = asyncio.Event()
+
+        # 监控线程管理
+        self._monitor_thread = None  # 保存监控线程引用
+        self._monitor_shutdown_event = threading.Event()  # 监控线程关闭信号
 
     
     def __del__(self):
@@ -184,7 +190,21 @@ class Detector:
         """请求停止workflow"""
         self._should_stop = True
         self._stop_event.set()
+
+        # 发送监控线程关闭信号
+        self._monitor_shutdown_event.set()
+
         log_task(f"任务停止请求 - 任务ID:{self.task_id}")
+
+        # 同步等待监控线程退出
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            log_task_debug(f"等待监控线程退出 - 任务ID:{self.task_id}")
+            self._monitor_thread.join(timeout=3.0)  # 最多等待3秒
+            if self._monitor_thread.is_alive():
+                log_task_error(f"监控线程退出超时 - 任务ID:{self.task_id}")
+            else:
+                log_task_debug(f"监控线程已退出 - 任务ID:{self.task_id}")
+
         try:
             self.mqtt_client.disconnect()
             log_task_debug(f"MQTT连接已断开 - 任务ID:{self.task_id}")
@@ -208,14 +228,18 @@ class Detector:
         log_task_debug(f"流健康监控启动 - 任务ID:{self.task_id}")
         check_interval = 10  # 每10秒检查一次
         max_idle_time = 180  # 3分钟无活动则认为流断开
-        
+
         # 异常计数机制：允许一定次数的异常，避免误停止
         consecutive_failures = 0  # 连续异常次数
         max_failures = 3  # 连续3次异常（每次间隔30秒）才停止任务
         init_wait_time = 120  # 初始化等待时间（秒）
 
-        while not self._should_stop:
-            time.sleep(check_interval)
+        # 使用两个事件控制退出：主停止信号和监控线程专用关闭信号
+        while not self._should_stop and not self._monitor_shutdown_event.is_set():
+            # 等待检查间隔，但同时响应关闭信号
+            if self._monitor_shutdown_event.wait(timeout=check_interval):
+                log_task_debug(f"监控线程收到关闭信号，退出循环 - 任务ID:{self.task_id}")
+                break
 
             try:
                 # 检查主推理循环的最后活动时间，而不是创建新的VideoCapture
@@ -276,47 +300,58 @@ class Detector:
                     self._should_stop = True
                     break
 
+        log_task_debug(f"流健康监控线程退出 - 任务ID:{self.task_id}")
+
     async def run_video(self):
         log_task(f"开始视频推理任务 - 任务ID:{self.task_id}")
 
         # 在这里多线程启动视频流健康监控任务
-        monitor_thread = threading.Thread(target=self.check_stream_alive, daemon=True)
-        monitor_thread.start()
+        self._monitor_thread = threading.Thread(target=self.check_stream_alive, daemon=True)
+        self._monitor_thread.start()
         log_task_debug(f"流健康监控线程启动 - 任务ID:{self.task_id}")
 
-        # 获取视频FPS
+        # 使用增强的视频后端配置连接RTMP流
         log_task_debug(f"开始连接视频流 - 任务ID:{self.task_id}, 地址:{self.video_path}")
-        max_retries = 3  # 最大重试次数
-        current_retry = 0
-        while current_retry <= max_retries:
-            # 判断视频流是否正常
-            try:
-                cap = cv2.VideoCapture(self.video_path)
-                if not cap.isOpened():
-                    cap.release()
-                    raise Exception(f"无法连接到视频流: {self.video_path}")
-                fps = cap.get(cv2.CAP_PROP_FPS)
-                # vid_stride = int(fps / 2)  # 每秒推理2帧
-                vid_stride = 2  # todo这里直接定义死，每隔两秒推理，正式场景要修改
-                vid_stride = vid_stride if vid_stride > 0 else 1
-                width, height = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-                cap.release()
-                # 等待更长时间，让RTMP服务器完全释放连接并准备好接受新连接
-                log_task(f"视频流连接成功 - 任务ID:{self.task_id}, FPS:{fps}, 分辨率:{int(width)}x{int(height)}")
-                log_task_debug(f"等待3秒让RTMP服务器准备好...")
-                await asyncio.sleep(3)
-                break
-            except Exception as e:
-                log_task_error(
-                    f"视频流连接失败 - 任务ID:{self.task_id}, 尝试:{current_retry}/{max_retries}, 错误:{str(e)}")
-                current_retry += 1
-                if current_retry <= max_retries:
-                    log_task_debug(f"等待3秒后重试 - 任务ID:{self.task_id}")
-                    await asyncio.sleep(3)
-                else:
-                    log_task_error(f"达到最大重试次数，停止任务 - 任务ID:{self.task_id}")
-                    self.mqtt_client.disconnect()
-                    raise e
+
+        # 自动检测并获取适合的RTMP配置
+        config = auto_rtmp_config(self.video_path)
+
+        try:
+            # 尝试连接视频流并获取流信息
+            cap = create_video_capture(self.video_path, config.backend)
+
+            if not cap.isOpened:
+                log_task_error(f"无法连接到视频流 - 任务ID:{self.task_id}, 地址:{self.video_path}")
+                raise Exception(f"无法连接到视频流: {self.video_path}")
+
+            # 获取视频流信息
+            fps = cap.get(cv2.CAP_PROP_FPS)
+
+            # 使用配置管理器计算合适的帧间隔
+            from .rtmp_config import RTMPConfigManager
+            # vid_stride = RTMPConfigManager.calculate_vid_stride(fps, target_fps=2)
+            vid_stride = 2
+            vid_stride = vid_stride if vid_stride > 0 else 1
+
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+            # 释放测试连接
+            cap.release()
+
+            # 获取配置等待时间
+            wait_time = RTMPConfigManager.get_wait_time_for_rtmp()
+
+            log_task(f"视频流连接成功 - 任务ID:{self.task_id}, FPS:{fps}, 分辨率:{width}x{height}, 推理间隔:{vid_stride}帧")
+            log_task_debug(f"连接参数 - 任务ID:{self.task_id}, 后端:{config.backend.value}, 最大重试:{config.max_retries}, 重试延迟:{config.retry_delay}s")
+            log_task_debug(f"等待{wait_time}秒让RTMP服务器准备好...")
+            await asyncio.sleep(wait_time)
+
+        except Exception as e:
+            log_task_error(f"视频流连接最终失败 - 任务ID:{self.task_id}, 地址:{self.video_path}, 错误:{str(e)}")
+            self.mqtt_client.disconnect()
+            self._should_stop = True
+            raise e
 
         # 设置初始帧时间，避免健康监控误判
         self._last_frame_time = time.time()
@@ -351,6 +386,7 @@ class Detector:
                 # 检查停止请求
                 if await self.check_stop():
                     log_task(f"模型1收到停止请求，退出推理循环 - 任务ID:{self.task_id}")
+                    self._should_stop = True
                     return
 
                 ori_img_shape = result.orig_shape
@@ -429,6 +465,7 @@ class Detector:
                 accident_time_start = time.time()
                 if await self.check_stop():
                     log_task(f"模型3收到停止请求，退出推理循环 - 任务ID:{self.task_id} \n")
+                    self._should_stop = True
                     return
 
                 if len(result) == 0:
@@ -537,6 +574,7 @@ class Detector:
                 # 检查停止请求
                 if await self.check_stop():
                     log_task(f"其他模型收到停止请求，退出推理循环 - 任务ID:{self.task_id}")
+                    self._should_stop = True
                     return
 
                 ori_img_shape = result.orig_shape
@@ -581,4 +619,8 @@ class Detector:
                     log_task_debug(f"发送MQTT消息 - 任务ID:{self.task_id}, 目标ID:{id}, 主题:{self.topic}")
                     print(mqtt_message)
                     mqtt_success = self.mqtt_client.publish_message(self.topic, mqtt_message)
+
+        # 视频推理正常完成，停止健康监控
+        log_task(f"视频推理正常完成 - 任务ID:{self.task_id}")
+        self._should_stop = True
 
