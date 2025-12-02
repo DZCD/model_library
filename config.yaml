@@ -99,10 +99,11 @@ model:
     model_name: "infrared"
     class_path: "model_library.model.base_model.BaseModel"
     # model_path: "weight/yolo_infrared.pt"    # 红外行人检测
-    model_path: "weight/yolo_infrared_v2.pt"    # 红外行人检测_20251023
-    config: 0.3
-    classes: [0,1]
-    imgsz: 0  # 0 代表模型不采用原图大小
+    # model_path: "weight/yolo_infrared_v2.pt"    # 红外行人检测_20251023
+    model_path: "weight/yolo_infrared_v3_baseyolo12x.pt"    # 红外行人检测_20251201
+    config: 0.4
+    classes: [0]
+    imgsz: 1  # 0 代表模型不采用原图大小,1 代表模型采用原图大小
 
   7:
     model_name: "face_detect"
