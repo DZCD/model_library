@@ -358,14 +358,14 @@ class Detector:
         log_task_debug(f"设置初始帧时间 - 任务ID:{self.task_id}")
 
         if self.model_index == 1:
-            results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, imgsz=(int(height), int(width)),
-                                             verbose=False, conf=self.model_conf)
+            results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, classes=self.classes,
+                                             imgsz=(int(height), int(width)), verbose=False, conf=self.model_conf)
         elif self.model_index_3:
             results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, classes=self.classes,
                                              imgsz=(int(height), int(width)), verbose=False, conf=self.model_conf)
         else:
-            results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, imgsz=(int(height), int(width)),
-                                             verbose=False, conf=self.model_conf)
+            results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, classes=self.classes,
+                                             imgsz=(int(height), int(width)), verbose=False, conf=self.model_conf)
         if self.model_index == 1:
             # 消防通道占用，需要跟踪占用时间
             track_records = defaultdict(lambda: {'first_seen': None, 'last_seen': None, 'violation': False})
