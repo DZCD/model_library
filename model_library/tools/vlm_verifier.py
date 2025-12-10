@@ -2,6 +2,7 @@ import base64
 import cv2
 import numpy as np
 import time
+import threading
 from typing import Optional, Dict, Any
 from model_library.tools.logger import log_task_debug, log_task_error
 
@@ -17,6 +18,7 @@ class VLMVerifier:
         self.timeout = config.get('timeout', 10.0)
         self.stream = config.get('stream', True)  # 是否使用流式输出，默认开启
         self.stream_timeout = config.get('stream_timeout', 10.0)  # 流式接收超时时间
+        self.total_timeout = config.get('total_timeout', 15.0)  # 硬性总超时时间
 
         # 初始化配置列表（优先级从高到低）
         self.configs = []
@@ -138,6 +140,39 @@ class VLMVerifier:
             return self.configs[self.current_config_index]
         return None
 
+    def _call_api_with_timeout(self, api_call_func, timeout_seconds):
+        """
+        强制超时的API调用包装器
+        Args:
+            api_call_func: API调用函数
+            timeout_seconds: 超时时间（秒）
+        Returns:
+            response或None（如果超时）
+        """
+        result = [None]
+        exception = [None]
+
+        def target():
+            try:
+                result[0] = api_call_func()
+            except Exception as e:
+                exception[0] = e
+
+        thread = threading.Thread(target=target)
+        thread.daemon = True
+        thread.start()
+        thread.join(timeout=timeout_seconds)
+
+        if thread.is_alive():
+            # 线程仍在运行，说明超时了
+            log_task_error(f"API调用强制超时({timeout_seconds}秒)")
+            return None, TimeoutError(f"API调用超时({timeout_seconds}秒)")
+
+        if exception[0]:
+            return None, exception[0]
+
+        return result[0], None
+
     def verify_accident(self, image: np.ndarray) -> bool:
         """
         使用 VLM 验证事故（支持流式/非流式，带早期退出和超时降级）
@@ -148,6 +183,10 @@ class VLMVerifier:
 
         if image is None or image.size == 0:
             return False
+
+        # 使用配置中的总超时时间
+        total_timeout = self.total_timeout
+        overall_start_time = time.time()
 
         # 重置配置索引，每次验证都从最优配置开始尝试
         self.current_config_index = 0
@@ -160,11 +199,11 @@ class VLMVerifier:
 
         # 根据配置选择流式或非流式
         if self.stream:
-            return self._verify_with_stream(image)
+            return self._verify_with_stream(image, overall_start_time, total_timeout)
         else:
-            return self._verify_without_stream(image)
+            return self._verify_without_stream(image, overall_start_time, total_timeout)
     
-    def _verify_with_stream(self, image: np.ndarray) -> bool:
+    def _verify_with_stream(self, image: np.ndarray, overall_start_time: float, total_timeout: float) -> bool:
         """流式验证（支持早期退出和配置切换）"""
         start_time = time.time()
 
@@ -180,6 +219,11 @@ class VLMVerifier:
 
         # 尝试所有可用配置
         while self.current_config_index < len(self.configs):
+            # 检查总超时时间
+            overall_elapsed = time.time() - overall_start_time
+            if overall_elapsed > total_timeout:
+                log_task_error(f"VLM验证总超时({overall_elapsed:.1f}秒)，降级使用算法验证结果")
+                return True
             config = self.current_config
             if not config or not self.client:
                 if not self._try_next_config():
@@ -190,30 +234,39 @@ class VLMVerifier:
             config_start_time = time.time()
 
             try:
-                # 调用流式 API
+                # 使用强制超时的API调用
+                def make_api_call():
+                    return self.client.chat.completions.create(
+                        model=config["model"],
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": self.prompt},
+                                    {"type": "image_url", "image_url": {"url": image_url}}
+                                ]
+                            }
+                        ],
+                        stream=True,  # 开启流式输出
+                        timeout=self.timeout,
+                        temperature=0.1
+                    )
+
                 log_task_debug(f"正在调用VLM模型流式验证: {config['model']}, 配置: {config['name']}")
-                response = self.client.chat.completions.create(
-                    model=config["model"],
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": self.prompt},
-                                {"type": "image_url", "image_url": {"url": image_url}}
-                            ]
-                        }
-                    ],
-                    stream=True,  # 开启流式输出
-                    timeout=self.timeout,
-                    temperature=0.1
-                )
+                response, api_error = self._call_api_with_timeout(make_api_call, self.timeout)
+
+                if api_error:
+                    raise api_error
+
+                # API连接成功，开始流式接收
+                log_task_debug(f"VLM API连接成功，开始流式接收: {config['name']}")
 
                 # 逐块接收响应
                 for chunk in response:
-                    # 检查超时
-                    elapsed = time.time() - start_time
-                    if elapsed > self.stream_timeout:
-                        log_task_error(f"VLM流式接收超时({elapsed:.1f}秒)，尝试下一个配置")
+                    # 检查当前配置的超时（使用每个配置的独立超时时间）
+                    config_elapsed = time.time() - config_start_time
+                    if config_elapsed > self.stream_timeout:
+                        log_task_error(f"VLM流式接收超时({config_elapsed:.1f}秒)，尝试下一个配置")
                         break  # 跳出循环，尝试下一个配置
 
                     # 提取内容
@@ -253,18 +306,27 @@ class VLMVerifier:
             except Exception as e:
                 elapsed = time.time() - config_start_time
                 error_type = type(e).__name__
-                log_task_error(f"VLM流式验证失败(耗时{elapsed:.2f}秒, 配置: {config['name']}, {error_type}): {e}")
 
-                # 尝试下一个配置
-                if not self._try_next_config():
-                    break
-                continue
+                # 区分API连接失败和流式接收失败
+                if "Timeout" in error_type or "Connection" in error_type or "502" in str(e) or "503" in str(e) or "504" in str(e):
+                    log_task_error(f"VLM API连接失败(耗时{elapsed:.2f}秒, 配置: {config['name']}, {error_type}): {e}")
+                    # API连接失败，立即切换配置
+                    log_task_debug(f"API连接失败，立即切换到下一个配置")
+                    if not self._try_next_config():
+                        break
+                    continue
+                else:
+                    log_task_error(f"VLM流式接收失败(耗时{elapsed:.2f}秒, 配置: {config['name']}, {error_type}): {e}")
+                    # 尝试下一个配置
+                    if not self._try_next_config():
+                        break
+                    continue
 
         # 所有配置都尝试失败，降级使用算法验证结果
         log_task_error("所有VLM配置都失败，降级使用算法验证结果")
         return True
     
-    def _verify_without_stream(self, image: np.ndarray) -> bool:
+    def _verify_without_stream(self, image: np.ndarray, overall_start_time: float, total_timeout: float) -> bool:
         """非流式验证（支持配置切换）"""
         start_time = time.time()
 
@@ -280,6 +342,11 @@ class VLMVerifier:
 
         # 尝试所有可用配置
         while self.current_config_index < len(self.configs):
+            # 检查总超时时间
+            overall_elapsed = time.time() - overall_start_time
+            if overall_elapsed > total_timeout:
+                log_task_error(f"VLM验证总超时({overall_elapsed:.1f}秒)，降级使用算法验证结果")
+                return True
             config = self.current_config
             if not config or not self.client:
                 if not self._try_next_config():
@@ -289,23 +356,31 @@ class VLMVerifier:
             config_start_time = time.time()
 
             try:
-                # 调用非流式 API
+                # 使用强制超时的API调用
+                def make_api_call():
+                    return self.client.chat.completions.create(
+                        model=config["model"],
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": self.prompt},
+                                    {"type": "image_url", "image_url": {"url": image_url}}
+                                ]
+                            }
+                        ],
+                        stream=False,  # 关闭流式输出
+                        timeout=self.timeout,
+                        temperature=0.1
+                    )
+
                 log_task_debug(f"正在调用VLM模型非流式验证: {config['model']}, 配置: {config['name']}")
-                response = self.client.chat.completions.create(
-                    model=config["model"],
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": self.prompt},
-                                {"type": "image_url", "image_url": {"url": image_url}}
-                            ]
-                        }
-                    ],
-                    stream=False,  # 关闭流式输出
-                    timeout=self.timeout,
-                    temperature=0.1
-                )
+                response, api_error = self._call_api_with_timeout(make_api_call, self.timeout)
+
+                if api_error:
+                    raise api_error
+
+                # API连接成功，继续处理响应
 
                 if not response.choices or not response.choices[0].message:
                     log_task_error("VLM响应为空")
@@ -322,12 +397,21 @@ class VLMVerifier:
             except Exception as e:
                 elapsed = time.time() - config_start_time
                 error_type = type(e).__name__
-                log_task_error(f"VLM非流式验证失败(耗时{elapsed:.2f}秒, 配置: {config['name']}, {error_type}): {e}")
 
-                # 尝试下一个配置
-                if not self._try_next_config():
-                    break
-                continue
+                # 区分API连接失败和响应处理失败
+                if "Timeout" in error_type or "Connection" in error_type or "502" in str(e) or "503" in str(e) or "504" in str(e):
+                    log_task_error(f"VLM API连接失败(耗时{elapsed:.2f}秒, 配置: {config['name']}, {error_type}): {e}")
+                    # API连接失败，立即切换配置
+                    log_task_debug(f"API连接失败，立即切换到下一个配置")
+                    if not self._try_next_config():
+                        break
+                    continue
+                else:
+                    log_task_error(f"VLM响应处理失败(耗时{elapsed:.2f}秒, 配置: {config['name']}, {error_type}): {e}")
+                    # 尝试下一个配置
+                    if not self._try_next_config():
+                        break
+                    continue
 
         # 所有配置都尝试失败，降级使用算法验证结果
         log_task_error("所有VLM配置都失败，降级使用算法验证结果")
