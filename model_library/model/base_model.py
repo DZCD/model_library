@@ -65,7 +65,7 @@ class BaseModel:
         """提取Results中的推理结果数据，包括框的坐标、类别、置信度"""
         results_dict = []
         for result in results:
-            if len(result) == 0:
+            if result is None or len(result) == 0:
                 continue
             boxes = result.obb
             if boxes:
@@ -89,7 +89,10 @@ class BaseModel:
                 conf = boxes.conf.tolist()
 
             try:
-                track_id = boxes.id.tolist()
+                if boxes.id is not None:
+                    track_id = boxes.id.tolist()
+                else:
+                    track_id = "unknown"
             except:
                 track_id = "unknown"
 
