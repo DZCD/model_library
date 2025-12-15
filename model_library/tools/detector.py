@@ -8,8 +8,6 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from collections import defaultdict
 
-from shapely.geometry import Polygon
-
 from ..model.model_manager import model_manager
 from ..tools.utils import Config
 from ..client.mqtt_client import MQTTClient
@@ -20,6 +18,8 @@ from .accident_strategies import AccidentStrategyFactory
 from .vlm_verifier import VLMVerifier
 from .video_backend import create_video_capture, VideoBackend, VideoBackendConfig
 from .rtmp_config import auto_rtmp_config
+from .mqtt_formatter import MQTTMessageFormatter
+from .accident_strategies import GeometryUtils
 
 BeiJingTime = ZoneInfo("Asia/Shanghai")
 
@@ -90,42 +90,7 @@ class Detector:
         """获取当前存活的实例数量"""
         return cls._instance_count
 
-    @staticmethod
-    def intersection_judgment(box1, box_list, threshold=0.2):
-        """
-        输入一个yolo的xywhr格式边界框以及一个8点格式边界框列表，
-        判断后者有哪些与前者相交，相交面积占box2面积的比例超过阈值则判断为事故车辆
-        返回列表中的索引。
-        
-        Args:
-            box1: 单个边界框坐标 [x, y, width, height, rotation] (xywhr格式，事故区域)
-            box_list: 边界框列表，每个元素为 [[x1,y1],[x2,y2],[x3,y3],[x4,y4]] (8点格式，车辆列表)
-            threshold: 相交面积占box2面积的比例阈值，默认0.2
-            
-        Returns:
-            list: 相交的边界框在列表中的索引（事故车辆索引）
-        """
-        # 将box1从xywhr转换为多边形
-        x, y, w, h, angle = box1
-        cos_a, sin_a = math.cos(angle), math.sin(angle)
-        corners = [[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]]
-        box1_vertices = [(cx * cos_a - cy * sin_a + x, cx * sin_a + cy * cos_a + y) 
-                        for cx, cy in corners]
-        poly1 = Polygon(box1_vertices)
-        
-        intersecting_indices = []
-        for i, box2 in enumerate(box_list):
-            poly2 = Polygon(box2)
-            intersection = poly1.intersection(poly2)
-            
-            if intersection.area > 0:
-                # 计算相交面积占box2面积的比例
-                overlap_ratio = intersection.area / poly2.area
-                if overlap_ratio >= threshold:
-                    intersecting_indices.append(i)
-        
-        return intersecting_indices
-
+  
     async def _save_and_publish_accident(self, result, accident_item, object_name, ori_img_shape, timestamp_str):
         """
         保存事故图像并发布MQTT消息
@@ -147,19 +112,16 @@ class Detector:
                 quality=85
             )
 
-            # 构建MQTT消息
-            mqtt_message = {"imageInfo": {}}
-            mqtt_message["imageInfo"]["imageId"] = ""
-            mqtt_message["imageInfo"]["dataType"] = "url"
-            mqtt_message["imageInfo"]["imageUrl"] = object_name
-            mqtt_message["imageInfo"]["data"] = ""
+            # 使用MQTT格式化器构建消息
+            mqtt_message = MQTTMessageFormatter.format_accident_message(
+                object_name=object_name,
+                accident_item=accident_item,
+                ori_img_shape=ori_img_shape,
+                task_id=self.task_id,
+                timestamp_str=timestamp_str
+            )
+            # 确保objNum使用len(result)以保持原有逻辑
             mqtt_message["imageInfo"]["objNum"] = len(result)
-            mqtt_message["imageInfo"]["boxs"] = accident_item
-            mqtt_message["imageInfo"]["imageWidth"] = ori_img_shape[1]
-            mqtt_message["imageInfo"]["imageHeight"] = ori_img_shape[0]
-            mqtt_message["imageInfo"]["imageSize"] = ""
-            mqtt_message["imageInfo"]["task_id"] = self.task_id
-            mqtt_message["imageInfo"]["timestamp"] = timestamp_str
 
             # 发送MQTT消息
             log_task_debug(f"发送事故MQTT消息 - 任务ID:{self.task_id}, 主题:{self.topic}")
@@ -424,17 +386,13 @@ class Detector:
                                 quality=85
                             )
 
-                            mqtt_message = {"imageInfo": {}}
-                            mqtt_message["imageInfo"]["imageId"] = ""
-                            mqtt_message["imageInfo"]["dataType"] = "url"
-                            mqtt_message["imageInfo"]["imageUrl"] = object_name
-                            mqtt_message["imageInfo"]["data"] = ""
-                            mqtt_message["imageInfo"]["objNum"] = len(result)
-                            mqtt_message["imageInfo"]["boxs"] = result_item
-                            mqtt_message["imageInfo"]["imageWidth"] = ori_img_shape[1]
-                            mqtt_message["imageInfo"]["imageHeight"] = ori_img_shape[0]
-                            mqtt_message["imageInfo"]["imageSize"] = ""
-                            mqtt_message["imageInfo"]["message"] = "检测到消防通道被占用"
+                            # 使用MQTT格式化器构建消防通道占用消息
+                            mqtt_message = MQTTMessageFormatter.format_fire_lane_violation_message(
+                                object_name=object_name,
+                                result_item=result_item,
+                                obj_num=len(result),
+                                ori_img_shape=ori_img_shape
+                            )
                             # 发送到MQTT主题: {类别名}
                             log_task_debug(f"发送MQTT消息 - 任务ID:{self.task_id}, 主题:{self.topic}")
                             mqtt_success = self.mqtt_client.publish_message(self.topic, mqtt_message)
@@ -525,7 +483,7 @@ class Detector:
                         continue
 
                     car_result_obb = car_result[0].obb.xyxyxyxy.tolist()
-                    inter_index = self.intersection_judgment(accident_obb, car_result_obb)
+                    inter_index = GeometryUtils.intersection_judgment(accident_obb, car_result_obb)
                     accident_car = len(inter_index)
 
                     if accident_car == 0:
@@ -601,19 +559,15 @@ class Detector:
                         image_format='jpg',
                         quality=85
                     )
-                    mqtt_message = {"imageInfo": {}}
-                    mqtt_message["imageInfo"]["imageId"] = ""
-                    mqtt_message["imageInfo"]["dataType"] = "url"
-                    mqtt_message["imageInfo"]["imageUrl"] = object_name
-                    mqtt_message["imageInfo"]["data"] = ""
-                    mqtt_message["imageInfo"]["objNum"] = len(result)
-                    mqtt_message["imageInfo"]["boxs"] = result_item
-                    mqtt_message["imageInfo"]["imageWidth"] = ori_img_shape[1]
-                    mqtt_message["imageInfo"]["imageHeight"] = ori_img_shape[0]
-                    mqtt_message["imageInfo"]["imageSize"] = ""
-                    mqtt_message["imageInfo"]["task_id"] = self.task_id
-                    mqtt_message["imageInfo"]["message"] = "检测到目标"
-                    mqtt_message["imageInfo"]["timestamp"] = timestamp_str
+                    # 使用MQTT格式化器构建通用检测消息
+                    mqtt_message = MQTTMessageFormatter.format_general_detection_message(
+                        object_name=object_name,
+                        result_item=result_item,
+                        obj_num=len(result),
+                        ori_img_shape=ori_img_shape,
+                        task_id=self.task_id,
+                        timestamp_str=timestamp_str
+                    )
 
                     # 发送到MQTT主题: {类别名}
                     log_task_debug(f"发送MQTT消息 - 任务ID:{self.task_id}, 目标ID:{id}, 主题:{self.topic}")

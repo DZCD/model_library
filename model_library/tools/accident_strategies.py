@@ -7,6 +7,114 @@ from typing import List, Dict, Any
 from shapely.geometry import Polygon
 
 
+class GeometryUtils:
+    """几何计算工具类 - 统一管理几何相关的计算功能"""
+
+    @staticmethod
+    def intersection_judgment(box1, box_list, threshold=0.2):
+        """
+        输入一个yolo的xywhr格式边界框以及一个8点格式边界框列表，
+        判断后者有哪些与前者相交，相交面积占box2面积的比例超过阈值则判断为事故车辆
+        返回列表中的索引。
+
+        Args:
+            box1: 单个边界框坐标 [x, y, width, height, rotation] (xywhr格式，事故区域)
+            box_list: 边界框列表，每个元素为 [[x1,y1],[x2,y2],[x3,y3],[x4,y4]] (8点格式，车辆列表)
+            threshold: 相交面积占box2面积的比例阈值，默认0.2
+
+        Returns:
+            list: 相交的边界框在列表中的索引（事故车辆索引）
+        """
+        # 将box1从xywhr转换为多边形
+        x, y, w, h, angle = box1
+        cos_a, sin_a = math.cos(angle), math.sin(angle)
+        corners = [[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]]
+        box1_vertices = [(cx * cos_a - cy * sin_a + x, cx * sin_a + cy * cos_a + y)
+                        for cx, cy in corners]
+        poly1 = Polygon(box1_vertices)
+
+        intersecting_indices = []
+        for i, box2 in enumerate(box_list):
+            poly2 = Polygon(box2)
+            intersection = poly1.intersection(poly2)
+
+            if intersection.area > 0:
+                # 计算相交面积占box2面积的比例
+                overlap_ratio = intersection.area / poly2.area
+                if overlap_ratio >= threshold:
+                    intersecting_indices.append(i)
+
+        return intersecting_indices
+
+    @staticmethod
+    def convert_xywhr_to_polygon(x, y, w, h, angle):
+        """
+        将xywhr格式的边界框转换为Shapely多边形
+
+        Args:
+            x, y: 中心点坐标
+            w, h: 宽度和高度
+            angle: 旋转角度（弧度）
+
+        Returns:
+            Polygon: Shapely多边形对象
+        """
+        cos_a, sin_a = math.cos(angle), math.sin(angle)
+        corners = [[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]]
+        vertices = [(cx * cos_a - cy * sin_a + x, cx * sin_a + cy * cos_a + y)
+                   for cx, cy in corners]
+        return Polygon(vertices)
+
+    @staticmethod
+    def calculate_overlap_ratio(poly1, poly2):
+        """
+        计算两个多边形的重叠比例（交集面积占较小多边形面积的比例）
+
+        Args:
+            poly1: 第一个多边形
+            poly2: 第二个多边形
+
+        Returns:
+            float: 重叠比例 (0-1)
+        """
+        intersection = poly1.intersection(poly2)
+        if intersection.area > 0:
+            min_area = min(poly1.area, poly2.area)
+            return intersection.area / min_area
+        return 0.0
+
+    @staticmethod
+    def calculate_distance(box1, box2, use_center_distance=True):
+        """
+        计算两个边界框之间的距离
+
+        Args:
+            box1: 第一个边界框 {'x', 'y', 'width', 'height', 'rotation'}
+            box2: 第二个边界框 {'x', 'y', 'width', 'height', 'rotation'}
+            use_center_distance: 是否使用中心点距离，False则使用多边形最小距离
+
+        Returns:
+            float: 距离值
+        """
+        if use_center_distance:
+            # 使用中心点距离
+            center1 = (box1['x'], box1['y'])
+            center2 = (box2['x'], box2['y'])
+            distance = math.sqrt(
+                (center1[0] - center2[0])**2 + (center1[1] - center2[1])**2
+            )
+            return distance
+        else:
+            # 使用多边形之间的最小距离
+            poly1 = GeometryUtils.convert_xywhr_to_polygon(
+                box1['x'], box1['y'], box1['width'], box1['height'], box1['rotation']
+            )
+            poly2 = GeometryUtils.convert_xywhr_to_polygon(
+                box2['x'], box2['y'], box2['width'], box2['height'], box2['rotation']
+            )
+            return poly1.distance(poly2)
+
+
 class AccidentVerificationStrategy(ABC):
     """事故验证策略基类"""
 
@@ -39,13 +147,10 @@ class AccidentVerificationStrategy(ABC):
 
     @staticmethod
     def box_to_polygon(box: Dict) -> Polygon:
-        """将目标框转换为多边形"""
-        x, y, w, h, angle = box['x'], box['y'], box['width'], box['height'], box['rotation']
-        cos_a, sin_a = math.cos(angle), math.sin(angle)
-        corners = [[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]]
-        vertices = [(cx * cos_a - cy * sin_a + x, cx * sin_a + cy * cos_a + y)
-                   for cx, cy in corners]
-        return Polygon(vertices)
+        """将目标框转换为多边形 - 使用GeometryUtils统一处理"""
+        return GeometryUtils.convert_xywhr_to_polygon(
+            box['x'], box['y'], box['width'], box['height'], box['rotation']
+        )
 
     @staticmethod
     def box_center(box: Dict) -> tuple:
@@ -72,12 +177,10 @@ class OverlapStrategy(AccidentVerificationStrategy):
             for pedestrian_box in pedestrian_boxes:
                 pedestrian_poly = self.box_to_polygon(pedestrian_box)
 
-                # 计算重叠面积
-                intersection = accident_poly.intersection(pedestrian_poly)
-                if intersection.area > 0:
-                    overlap_ratio = intersection.area / min(accident_poly.area, pedestrian_poly.area)
-                    if overlap_ratio >= self.overlap_threshold:
-                        overlap_count += 1
+                # 使用GeometryUtils计算重叠比例
+                overlap_ratio = GeometryUtils.calculate_overlap_ratio(accident_poly, pedestrian_poly)
+                if overlap_ratio >= self.overlap_threshold:
+                    overlap_count += 1
 
             # 需要两个及以上行人才通过验证
             if overlap_count >= 2:
@@ -103,23 +206,13 @@ class DistanceStrategy(AccidentVerificationStrategy):
         verified_indices = []
 
         for i, accident_box in enumerate(accident_boxes):
-            accident_center = self.box_center(accident_box)
-
             # 检查与每个行人框的距离
             nearby_pedestrian_count = 0
             for pedestrian_box in pedestrian_boxes:
-                if self.use_center_distance:
-                    # 使用中心点距离
-                    pedestrian_center = self.box_center(pedestrian_box)
-                    distance = math.sqrt(
-                        (accident_center[0] - pedestrian_center[0])**2 +
-                        (accident_center[1] - pedestrian_center[1])**2
-                    )
-                else:
-                    # 使用边界框之间的最小距离
-                    accident_poly = self.box_to_polygon(accident_box)
-                    pedestrian_poly = self.box_to_polygon(pedestrian_box)
-                    distance = accident_poly.distance(pedestrian_poly)
+                # 使用GeometryUtils计算距离
+                distance = GeometryUtils.calculate_distance(
+                    accident_box, pedestrian_box, self.use_center_distance
+                )
 
                 if distance <= self.distance_threshold:
                     nearby_pedestrian_count += 1

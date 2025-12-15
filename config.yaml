@@ -21,8 +21,9 @@ model:
   2:
     model_name: "fire_detect"
     class_path: "model_library.model.base_model.BaseModel"
-    model_path: "weight/fire_detect.pt"    # 火点检测
-    classes: [0]
+    model_path: "weight/fire_yolo11x.pt"    # 火点检测
+    config: 0.4
+    classes: [0,1]
     imgsz: 1  # 1 代表模型采用原图大小
 
 
@@ -60,10 +61,10 @@ model:
       enabled: true  # 开启多模态辅助验证
       stream: true  # 启用流式输出（更快响应，支持早期退出）
       # prompt: "图中红色框选区域内是否发生了车辆碰撞或交通事故？请回答是或否。"
-      # prompt: "图中红色框选区域内是否发生了车辆碰撞或交通事故？疑似剐蹭也算，如两辆车贴得很近，周围有两个以上的人在查看车辆，一定要有人。请只回答是或否。"
-      prompt: "图中红色框选区域内是否有两个以上的人。请只回答是或否。"  #后备prompt
+      prompt: "图中红色框选区域内是否发生了车辆碰撞或交通事故？疑似剐蹭也算，如两辆车贴得很近，周围有两个以上的人在查看车辆，一定要有人。请只回答是或否。"
+      # prompt: "这是无人机视角下的图片，图中红色框选区域内是否有两个或以上的人。请只回答是或否。"  #后备prompt
       # model: "Qwen/Qwen2.5-VL-72B-Instruct" # 可选：覆盖全局配置的模型
-      timeout: 3  # API 超时时间（秒）
+      timeout: 4  # API 超时时间（秒）
       stream_timeout: 7  # 流式接收超时时间（秒），超时后降级使用算法验证结果
       total_timeout: 15.0  # 硬性总超时时间（秒），超过此时间直接降级使用算法验证结果
       # modelscope:
@@ -106,7 +107,7 @@ model:
     class_path: "model_library.model.base_model.BaseModel"
     # model_path: "weight/yolo_infrared.pt"    # 红外行人检测
     # model_path: "weight/yolo_infrared_v2.pt"    # 红外行人检测_20251023
-    model_path: "weight/yolo_infrared_v3_baseyolo12x_onlyperson_53.pt"    # 红外行人检测_20251201
+    model_path: "weight/infrared_v4_baseyolo12x.pt"    # 红外行人检测_20251201
     # model_path: "weight/yolo_infrared_v4_baseyolo11x_onlyperson.pt"    # 红外行人检测_20251209
     config: 0.5
     classes: [0]
@@ -146,5 +147,6 @@ modelscope2:
   api_key: "ms-12f2520f-7ec4-4a83-b40b-6bcd2ebae367"
   base_url: "https://api-inference.modelscope.cn/v1/"
   model: "Qwen/Qwen2.5-VL-32B-Instruct"
+
 
 debug: true
