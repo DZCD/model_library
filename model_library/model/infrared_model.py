@@ -11,7 +11,8 @@ from typing import Optional, Dict
 
 
 class InfraredModel(BaseModel):
-    def __init__(self, model_path, enable_sahi=False, sahi_config=None, enable_tracking=True):
+    def __init__(self, model_path, enable_sahi=False, sahi_config=None, enable_tracking=True,
+                 model_index=None, estimated_memory=2500, device_override=None):
         """
         初始化红外检测模型，支持SAHI切片推理和跟踪
 
@@ -21,7 +22,8 @@ class InfraredModel(BaseModel):
             sahi_config: SAHI配置参数
             enable_tracking: 是否启用跟踪（单张图片建议关闭）
         """
-        super().__init__(model_path)
+        # 调用父类构造函数，传递GPU分配参数
+        super().__init__(model_path, model_index, estimated_memory, device_override)
 
         # SAHI和跟踪配置
         self.enable_sahi = enable_sahi

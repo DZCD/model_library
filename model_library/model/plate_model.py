@@ -9,8 +9,9 @@ from model_library.tools.utils import Config
 
 
 class PlateModel(BaseModel):
-    def __init__(self, model_path, ocr_model_path=None, enable_sahi=False, sahi_config=None, ocr_provider="local"):
-        super().__init__(model_path)
+    def __init__(self, model_path, ocr_model_path=None, enable_sahi=False, sahi_config=None, ocr_provider="local",
+                 model_index: int = None, estimated_memory: int = 1000, device_override: str = None):
+        super().__init__(model_path, model_index, estimated_memory, device_override)
         self.config = Config()
         self.ocr_provider_name = ocr_provider or "local"
         modelscope_conf = self.config.config.get("modelscope", {})

@@ -40,6 +40,18 @@ class ModelLoader:
                 if 'model_path' not in init_kwargs:
                     init_kwargs['model_path'] = model_path
 
+                # 添加模型索引（用于GPU分配）
+                if 'model_index' not in init_kwargs:
+                    init_kwargs['model_index'] = model_index
+
+                # 添加预估显存（从配置中读取）
+                if 'estimated_memory' in model_cfg:
+                    init_kwargs['estimated_memory'] = model_cfg['estimated_memory']
+                elif 'estimated_memory' not in init_kwargs:
+                    # 根据模型类型设置默认预估显存
+                    init_kwargs['estimated_memory'] = self._get_default_memory_for_model(model_index)
+
+                log_task_debug(f"模型加载参数 - 任务ID:{task_id}, 模型索引:{model_index}, 参数:{init_kwargs}")
                 model = model_class(**init_kwargs)
             except Exception as init_err:
                 log_task_error(f"模型实例化失败 - 任务ID:{task_id}, 类:{class_path}, 错误:{str(init_err)}")
@@ -50,5 +62,21 @@ class ModelLoader:
         except Exception as e:
             log_task_error(f"模型加载失败 - 任务ID:{task_id}, 错误:{str(e)}")
             raise
+
+    def _get_default_memory_for_model(self, model_index: int) -> int:
+        """根据模型类型返回默认的预估显存(MB)"""
+        # 模型显存需求预估（MB）
+        model_memory_map = {
+            0: 800,   # elevator_motor - 小模型
+            1: 1200,  # fire_lane_blockage - 中等模型
+            2: 2000,  # fire_detect - 大模型
+            3: 1500,  # accident - 中大模型
+            4: 1000,  # license plate - 中等模型+OCR
+            5: 900,   # car - 小模型
+            6: 2500,  # infrared - 大模型+SAHI
+            7: 700,   # face_detect - 小模型
+        }
+        return model_memory_map.get(model_index, 1000)  # 默认1GB
+
 
 model_loader = ModelLoader()

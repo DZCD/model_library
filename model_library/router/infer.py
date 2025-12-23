@@ -18,6 +18,8 @@ import logging
 from ..tools.detector import Detector
 from ..model.model_manager import model_manager
 from ..tools.reasoner import reasoner_single as reasoner
+from ..tools.gpu_manager import gpu_manager  # 添加GPU管理器导入
+from ..tools.logger import log_task, log_task_error, log_task_debug  # 添加日志工具
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -53,7 +55,8 @@ def run_workflow_in_thread(workflow: Detector, task_id: str):
         if task_id in running_tasks:
             running_tasks[task_id]["status"] = "completed"
             running_tasks[task_id]["end_time"] = datetime.now().isoformat()
-            running_tasks[task_id]["workflow"] = None
+            # 保留workflow引用但标记为可清理，让垃圾回收器处理
+            # running_tasks[task_id]["workflow"] = None
 
     except Exception as e:
         # 更新状态为失败
@@ -68,8 +71,39 @@ def run_workflow_in_thread(workflow: Detector, task_id: str):
             # 清理workflow引用，释放内存
             running_tasks[task_id]["workflow"] = None
     finally:
-        del workflow
-        loop.close()
+        # 修复：确保所有资源都被正确清理
+        try:
+            # 1. 停止监控线程
+            if hasattr(workflow, '_stop_monitor_thread'):
+                workflow._stop_monitor_thread()
+
+            # 2. 请求停止workflow
+            if hasattr(workflow, 'request_stop'):
+                workflow.request_stop()
+
+            # 3. 清理GPU资源引用
+            if hasattr(workflow, 'model_index') and workflow.model_index is not None:
+                try:
+                    gpu_manager.release_model(workflow.model_index)
+                    log_task(f"已释放模型 {workflow.model_index} 的GPU引用")
+                except Exception as gpu_error:
+                    log_task_error(f"GPU资源清理失败: {str(gpu_error)}")
+
+            # 4. 清理MQTT连接
+            if hasattr(workflow, 'mqtt_client'):
+                try:
+                    workflow.mqtt_client.disconnect()
+                    log_task_debug(f"MQTT连接已断开")
+                except Exception as mqtt_error:
+                    log_task_error(f"MQTT断开失败: {str(mqtt_error)}")
+
+        except Exception as cleanup_error:
+            log_task_error(f"资源清理异常: {str(cleanup_error)}")
+        finally:
+            # 删除workflow对象引用
+            del workflow
+            loop.close()
+            log_task("任务线程已完全清理")
 
 
 @router.post(
@@ -669,22 +703,109 @@ async def get_models():
     response_description="清理操作结果，包含清理的任务数量和剩余任务信息"
 )
 async def cleanup_completed_tasks():
+    """
+    清理已完成的推理任务，释放内存资源
+    生产环境建议定期调用此接口（如每30分钟）
+    """
     try:
         completed_tasks = []
-        for task_id, task_info in list(running_tasks.items()):
-            if task_info["status"] in ["completed", "failed", "stopped"]:
-                completed_tasks.append(task_id)
-                del running_tasks[task_id]
+        force_cleanup_tasks = []  # 强制清理的任务
+        memory_freed_tasks = []  # 内存释放的任务
 
-        logger.info(f"清理了 {len(completed_tasks)} 个已完成的任务")
+        # 清理配置
+        cleanup_completed_age = 300  # 5分钟前完成的任务
+        cleanup_failed_age = 1800    # 30分钟前失败的任务
+        cleanup_running_age = 7200   # 2小时前还在运行的任务（可能是僵尸任务）
+
+        current_time = datetime.now()
+
+        for task_id, task_info in list(running_tasks.items()):
+            task_status = task_info["status"]
+            workflow = task_info.get("workflow")
+
+            # 计算任务年龄
+            task_age = None
+            if task_info.get("end_time"):
+                try:
+                    end_time = datetime.fromisoformat(task_info["end_time"])
+                    task_age = (current_time - end_time).total_seconds()
+                except:
+                    pass
+            elif task_info.get("start_time"):
+                try:
+                    start_time = datetime.fromisoformat(task_info["start_time"])
+                    task_age = (current_time - start_time).total_seconds()
+                except:
+                    pass
+
+            # 根据状态和年龄决定是否清理
+            should_cleanup = False
+            cleanup_reason = ""
+
+            if task_status in ["completed"] and task_age and task_age > cleanup_completed_age:
+                should_cleanup = True
+                cleanup_reason = "completed_task"
+                completed_tasks.append(task_id)
+
+            elif task_status in ["failed", "stopped"] and task_age and task_age > cleanup_failed_age:
+                should_cleanup = True
+                cleanup_reason = "failed_task"
+                completed_tasks.append(task_id)
+
+            elif task_status == "running" and task_age and task_age > cleanup_running_age:
+                # 可能是僵尸任务，强制清理
+                should_cleanup = True
+                cleanup_reason = "zombie_task"
+                force_cleanup_tasks.append(task_id)
+
+                # 强制停止工作流
+                if workflow:
+                    try:
+                        if hasattr(workflow, 'request_stop'):
+                            workflow.request_stop()
+                        if hasattr(workflow, '_stop_monitor_thread'):
+                            workflow._stop_monitor_thread()
+                    except Exception as stop_error:
+                        logger.warning(f"强制停止任务失败 {task_id}: {stop_error}")
+
+            if should_cleanup:
+                # 清理workflow引用，触发垃圾回收
+                if workflow:
+                    try:
+                        # 使用资源清理管理器进行深度清理
+                        resource_cleanup_manager.cleanup_task(task_id, force=True)
+                        memory_freed_tasks.append(task_id)
+                    except Exception as cleanup_error:
+                        logger.warning(f"资源清理失败 {task_id}: {cleanup_error}")
+
+                # 从运行任务列表中移除
+                if task_id in running_tasks:
+                    del running_tasks[task_id]
+
+        total_cleaned = len(completed_tasks) + len(force_cleanup_tasks)
+
+        # 强制垃圾回收
+        import gc
+        gc.collect()
+
+        logger.info(f"清理完成 - 总计:{total_cleaned}, 正常:{len(completed_tasks)}, 强制:{len(force_cleanup_tasks)}, 内存释放:{len(memory_freed_tasks)}")
+        log_task(f"清理了 {total_cleaned} 个任务 (正常:{len(completed_tasks)}, 强制:{len(force_cleanup_tasks)})")
 
         return {
             "status": "succeed",
             "code": 200,
-            "msg": f"成功清理 {len(completed_tasks)} 个已完成的任务",
+            "msg": f"成功清理 {total_cleaned} 个任务",
             "data": {
-                "cleaned_tasks": completed_tasks,
-                "remaining_tasks": len(running_tasks)
+                "completed_tasks": completed_tasks,
+                "force_cleanup_tasks": force_cleanup_tasks,
+                "memory_freed_tasks": memory_freed_tasks,
+                "total_cleaned": total_cleaned,
+                "remaining_tasks": len(running_tasks),
+                "cleanup_policy": {
+                    "completed_after_seconds": cleanup_completed_age,
+                    "failed_after_seconds": cleanup_failed_age,
+                    "running_force_after_seconds": cleanup_running_age
+                }
             }
         }
 

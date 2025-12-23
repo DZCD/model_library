@@ -5,8 +5,8 @@ from datetime import datetime
 
 
 class TrackAccident(BaseModel):
-    def __init__(self, model_path):
-        super().__init__(model_path)
+    def __init__(self, model_path, model_index: int = None, estimated_memory: int = 1000, device_override: str = None):
+        super().__init__(model_path, model_index, estimated_memory, device_override)
         self.track_id = 0
         self.track_dict = {}
 

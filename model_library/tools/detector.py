@@ -20,6 +20,7 @@ from .video_backend import create_video_capture, VideoBackend, VideoBackendConfi
 from .rtmp_config import auto_rtmp_config
 from .mqtt_formatter import MQTTMessageFormatter
 from .accident_strategies import GeometryUtils
+from .resource_cleanup import resource_cleanup_manager
 
 BeiJingTime = ZoneInfo("Asia/Shanghai")
 
@@ -70,6 +71,9 @@ class Detector:
 
         log_task(f"检测器初始化完成 - 任务ID:{task_id}, 模型:{self.model_name}, MQTT主题:{self.topic}")
 
+        # 注册到资源清理管理器
+        resource_cleanup_manager.register_task(task_id, self, self.model_index)
+
         # 添加停止控制机制
         self._should_stop = False  # 检查任务执行状态。包括自动轮询以及手动停止
         self.stream_timeout = 180  # 3分钟超时
@@ -78,12 +82,55 @@ class Detector:
         # 监控线程管理
         self._monitor_thread = None  # 保存监控线程引用
         self._monitor_shutdown_event = threading.Event()  # 监控线程关闭信号
+        self._monitor_started = False  # 新增：跟踪监控线程是否已启动
 
     
     def __del__(self):
         """析构函数，用于跟踪对象何时被真正销毁"""
-        Detector._instance_count -= 1
-        log_task(f"Detector销毁 - 任务ID:{getattr(self, 'task_id', 'unknown')}, 剩余:{Detector._instance_count}")
+        try:
+            # 检查Python是否正在关闭
+            import sys
+            if sys.meta_path is None:
+                # Python正在关闭，跳过复杂的清理操作
+                Detector._instance_count = max(0, Detector._instance_count - 1)
+                return
+
+            # 安全检查：确保对象已正确初始化
+            if hasattr(self, '_monitor_thread') and self._monitor_thread is not None:
+                # 确保监控线程被正确停止
+                self._stop_monitor_thread()
+
+            # 使用资源清理管理器清理
+            if hasattr(self, 'task_id'):
+                resource_cleanup_manager.cleanup_task(self.task_id, force=True)
+
+            Detector._instance_count = max(0, Detector._instance_count - 1)
+            log_task(f"Detector销毁 - 任务ID:{getattr(self, 'task_id', 'unknown')}, 剩余:{Detector._instance_count}")
+        except Exception as e:
+            # 在Python关闭时，某些操作可能会失败，这是正常的
+            if "sys.meta_path is None" in str(e) or "Python is likely shutting down" in str(e):
+                # Python正在关闭，减少计数器但不记录日志
+                Detector._instance_count = max(0, Detector._instance_count - 1)
+            else:
+                # 其他异常仍然记录
+                print(f"析构函数异常: {str(e)}")
+
+    def enhanced_cleanup(self) -> bool:
+        """
+        增强的资源清理方法
+
+        Returns:
+            清理是否成功
+        """
+        try:
+            # 使用资源清理管理器进行完整清理
+            return resource_cleanup_manager.cleanup_task(
+                getattr(self, 'task_id', 'unknown'),
+                force=True
+            )
+        except Exception as e:
+            log_task_error(f"增强清理失败 - 任务ID:{getattr(self, 'task_id', 'unknown')}, 错误:{str(e)}")
+            return False
 
     @classmethod
     def get_instance_count(cls):
@@ -148,24 +195,37 @@ class Detector:
         topic_name = f"{datetime_str}-{self.model_name}"
         return topic_name
 
+    def _stop_monitor_thread(self):
+        """安全停止监控线程"""
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            log_task_debug(f"停止监控线程 - 任务ID:{self.task_id}")
+
+            # 发送停止信号
+            self._should_stop = True
+            self._monitor_shutdown_event.set()
+
+            # 等待线程退出
+            try:
+                self._monitor_thread.join(timeout=6.0)  # 增加等待时间到5秒
+                if self._monitor_thread.is_alive():
+                    log_task_error(f"监控线程退出超时 - 任务ID:{self.task_id}")
+                else:
+                    log_task_debug(f"监控线程已安全退出 - 任务ID:{self.task_id}")
+            except Exception as e:
+                log_task_error(f"停止监控线程时异常 - 任务ID:{self.task_id}, 错误:{str(e)}")
+
+        self._monitor_started = False
+
     def request_stop(self):
         """请求停止workflow"""
+        log_task(f"任务停止请求 - 任务ID:{self.task_id}")
+
+        # 设置停止标志
         self._should_stop = True
         self._stop_event.set()
 
-        # 发送监控线程关闭信号
-        self._monitor_shutdown_event.set()
-
-        log_task(f"任务停止请求 - 任务ID:{self.task_id}")
-
-        # 同步等待监控线程退出
-        if self._monitor_thread and self._monitor_thread.is_alive():
-            log_task_debug(f"等待监控线程退出 - 任务ID:{self.task_id}")
-            self._monitor_thread.join(timeout=3.0)  # 最多等待3秒
-            if self._monitor_thread.is_alive():
-                log_task_error(f"监控线程退出超时 - 任务ID:{self.task_id}")
-            else:
-                log_task_debug(f"监控线程已退出 - 任务ID:{self.task_id}")
+        # 停止监控线程
+        self._stop_monitor_thread()
 
         try:
             self.mqtt_client.disconnect()
@@ -193,8 +253,8 @@ class Detector:
 
         # 异常计数机制：允许一定次数的异常，避免误停止
         consecutive_failures = 0  # 连续异常次数
-        max_failures = 3  # 连续3次异常（每次间隔30秒）才停止任务
-        init_wait_time = 120  # 初始化等待时间（秒）
+        max_failures = 3  # 连续3次异常（每次间隔10秒）就停止任务
+        init_wait_time = 30  # 修复：减少初始化等待时间到30秒
 
         # 使用两个事件控制退出：主停止信号和监控线程专用关闭信号
         while not self._should_stop and not self._monitor_shutdown_event.is_set():
@@ -267,18 +327,19 @@ class Detector:
     async def run_video(self):
         log_task(f"开始视频推理任务 - 任务ID:{self.task_id}")
 
-        # 在这里多线程启动视频流健康监控任务
-        self._monitor_thread = threading.Thread(target=self.check_stream_alive, daemon=True)
-        self._monitor_thread.start()
-        log_task_debug(f"流健康监控线程启动 - 任务ID:{self.task_id}")
-
-        # 使用增强的视频后端配置连接RTMP流
-        log_task_debug(f"开始连接视频流 - 任务ID:{self.task_id}, 地址:{self.video_path}")
-
-        # 自动检测并获取适合的RTMP配置
-        config = auto_rtmp_config(self.video_path)
+        # 初始化变量，确保在finally块中可用
+        fps = None
+        width = None
+        height = None
+        vid_stride = 2
 
         try:
+            # 使用增强的视频后端配置连接RTMP流 - 先连接，再启动监控
+            log_task_debug(f"开始连接视频流 - 任务ID:{self.task_id}, 地址:{self.video_path}")
+
+            # 自动检测并获取适合的RTMP配置
+            config = auto_rtmp_config(self.video_path)
+
             # 尝试连接视频流并获取流信息
             cap = create_video_capture(self.video_path, config.backend)
 
@@ -291,7 +352,6 @@ class Detector:
 
             # 使用配置管理器计算合适的帧间隔
             from .rtmp_config import RTMPConfigManager
-            # vid_stride = RTMPConfigManager.calculate_vid_stride(fps, target_fps=2)
             vid_stride = 2
             vid_stride = vid_stride if vid_stride > 0 else 1
 
@@ -309,272 +369,300 @@ class Detector:
             log_task_debug(f"等待{wait_time}秒让RTMP服务器准备好...")
             await asyncio.sleep(wait_time)
 
-        except Exception as e:
-            log_task_error(f"视频流连接最终失败 - 任务ID:{self.task_id}, 地址:{self.video_path}, 错误:{str(e)}")
-            self.mqtt_client.disconnect()
-            self._should_stop = True
-            raise e
+            # RTMP连接成功后再启动监控线程
+            log_task_debug(f"RTMP连接成功，启动监控线程 - 任务ID:{self.task_id}")
+            self._monitor_thread = threading.Thread(target=self.check_stream_alive, daemon=True)
+            self._monitor_thread.start()
+            self._monitor_started = True
+            log_task_debug(f"流健康监控线程启动 - 任务ID:{self.task_id}")
 
-        # 设置初始帧时间，避免健康监控误判
-        self._last_frame_time = time.time()
-        log_task_debug(f"设置初始帧时间 - 任务ID:{self.task_id}")
+            # 设置初始帧时间，避免健康监控误判
+            self._last_frame_time = time.time()
+            log_task_debug(f"设置初始帧时间 - 任务ID:{self.task_id}")
 
-        if self.model_index == 1:
-            results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, classes=self.classes,
-                                             imgsz=(int(height), int(width)), verbose=False, conf=self.model_conf)
-        elif self.model_index_3:
-            results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, classes=self.classes,
-                                             imgsz=(int(height), int(width)), verbose=False, conf=self.model_conf)
-        else:
-            results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, classes=self.classes,
-                                             imgsz=(int(height), int(width)), verbose=False, conf=self.model_conf)
-        if self.model_index == 1:
-            # 消防通道占用，需要跟踪占用时间
-            track_records = defaultdict(lambda: {'first_seen': None, 'last_seen': None, 'violation': False})
-            time_threshold = self.config.model_list[self.model_index].get('time_threshold', 30)  # 默认30秒
-            current_frame_ids = set()
-            # 添加连续未出现帧数跟踪
-            consecutive_missing_frames = defaultdict(int)
-            max_missing_frames = 5  # 连续5帧未出现则移除
+            # ========== 开始视频推理逻辑 ==========
+            log_task_debug(f"开始视频推理 - 任务ID:{self.task_id}, 模型索引:{self.model_index}")
 
-            frame_count = 0
-
-            for result in results:
-                # 更新最后帧时间（用于健康监控）
-                self._last_frame_time = time.time()
-                
-                current_timestamp = datetime.now(BeiJingTime)
-                date_str = current_timestamp.strftime("%Y-%m-%d")
-                # 检查停止请求
-                if await self.check_stop():
-                    log_task(f"模型1收到停止请求，退出推理循环 - 任务ID:{self.task_id}")
-                    self._should_stop = True
-                    return
-
-                ori_img_shape = result.orig_shape
-                frame_count += 1
-                current_time = frame_count * vid_stride / fps  # 当前视频时间（秒）
-
-                results_dict = self.model.post_process([result], pixel_position=self.pixel_position)
-
-                # 获取当前帧检测到的所有track_id并处理
+            # 根据模型索引开始推理
+            if self.model_index == 1:
+                results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, classes=self.classes,
+                                                 imgsz=(int(height), int(width)), verbose=False, conf=self.model_conf)
+            elif self.model_index_3:
+                results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, classes=self.classes,
+                                                 imgsz=(int(height), int(width)), verbose=False, conf=self.model_conf)
+            else:
+                results = self.model.track_video(self.video_path, stream=True, vid_stride=vid_stride, classes=self.classes,
+                                                 imgsz=(int(height), int(width)), verbose=False, conf=self.model_conf)
+            # 根据模型类型执行不同的推理逻辑
+            if self.model_index == 1:
+                # 消防通道占用，需要跟踪占用时间
+                track_records = defaultdict(lambda: {'first_seen': None, 'last_seen': None, 'violation': False})
+                time_threshold = self.config.model_list[self.model_index].get('time_threshold', 30)  # 默认30秒
                 current_frame_ids = set()
-                for result_item in results_dict:
-                    track_id = result_item.get('track_id', None)
-                    if track_id is not None:
-                        current_frame_ids.add(track_id)
+                # 添加连续未出现帧数跟踪
+                consecutive_missing_frames = defaultdict(int)
+                max_missing_frames = 5  # 连续5帧未出现则移除
 
-                        # 更新追踪记录
-                        if track_records[track_id]['first_seen'] is None:
-                            track_records[track_id]['first_seen'] = current_time
-                            log_task(f"检测到新目标进入消防通道 - 任务ID:{self.task_id}, 目标ID:{track_id}")
+                frame_count = 0
 
-                        track_records[track_id]['last_seen'] = current_time
+                for result in results:
+                    # 更新最后帧时间（用于健康监控）
+                    self._last_frame_time = time.time()
 
-                        # 检查是否违规
-                        duration = current_time - track_records[track_id]['first_seen']
-                        if duration >= time_threshold:
-                            track_records[track_id]['violation'] = True
-                            object_name = f"ai/{date_str}/{self.model_name}/{current_timestamp}_{track_id}.jpg"
-                            log_task(
-                                f"消防通道占用违规 - 任务ID:{self.task_id}, 目标ID:{track_id}, 占用时长:{duration:.1f}秒, 图片:{object_name}")
-                            infer_image = result.plot()
-                            _, _ = self.minio_client.upload_image_array(
-                                image_array=infer_image,
-                                object_name=object_name,
-                                image_format='jpg',
-                                quality=85
-                            )
+                    current_timestamp = datetime.now(BeiJingTime)
+                    date_str = current_timestamp.strftime("%Y-%m-%d")
+                    # 检查停止请求
+                    if await self.check_stop():
+                        log_task(f"模型1收到停止请求，退出推理循环 - 任务ID:{self.task_id}")
+                        self._should_stop = True
+                        break
 
-                            # 使用MQTT格式化器构建消防通道占用消息
-                            mqtt_message = MQTTMessageFormatter.format_fire_lane_violation_message(
-                                object_name=object_name,
-                                result_item=result_item,
-                                obj_num=len(result),
-                                ori_img_shape=ori_img_shape
-                            )
-                            # 发送到MQTT主题: {类别名}
-                            log_task_debug(f"发送MQTT消息 - 任务ID:{self.task_id}, 主题:{self.topic}")
-                            mqtt_success = self.mqtt_client.publish_message(self.topic, mqtt_message)
+                    ori_img_shape = result.orig_shape
+                    frame_count += 1
+                    current_time = frame_count * vid_stride / fps  # 当前视频时间（秒）
 
-                # 更新所有track_id的连续未出现帧数
-                for track_id in list(track_records.keys()):
-                    if track_id not in current_frame_ids:
-                        consecutive_missing_frames[track_id] += 1
-                        # 如果连续5帧未出现，则从track_records中移除
-                        if consecutive_missing_frames[track_id] >= max_missing_frames:
-                            log_task_debug(
-                                f"目标移除追踪 - 任务ID:{self.task_id}, 目标ID:{track_id}, 连续{max_missing_frames}帧未检测")
-                            del track_records[track_id]
-                            del consecutive_missing_frames[track_id]
-                    else:
-                        # 重置连续未出现帧数
-                        consecutive_missing_frames[track_id] = 0
+                    results_dict = self.model.post_process([result], pixel_position=self.pixel_position)
 
-        elif self.model_index_3:
-            # 事故检测模型，要补充车辆识别
-            accident_id = []
+                    # 获取当前帧检测到的所有track_id并处理
+                    current_frame_ids = set()
+                    for result_item in results_dict:
+                        track_id = result_item.get('track_id', None)
+                        if track_id is not None:
+                            current_frame_ids.add(track_id)
 
-            for result in results:
-                # 更新最后帧时间（用于健康监控）
-                self._last_frame_time = time.time()
-                
-                # 检查停止请求
-                accident_time_start = time.time()
-                if await self.check_stop():
-                    log_task(f"模型3收到停止请求，退出推理循环 - 任务ID:{self.task_id} \n")
-                    self._should_stop = True
-                    return
+                            # 更新追踪记录
+                            if track_records[track_id]['first_seen'] is None:
+                                track_records[track_id]['first_seen'] = current_time
+                                log_task(f"检测到新目标进入消防通道 - 任务ID:{self.task_id}, 目标ID:{track_id}")
 
-                if len(result) == 0:
-                    continue
-                log_task(f"模型模型推理中")
+                            track_records[track_id]['last_seen'] = current_time
 
-                # 后处理检测结果
-                results_list = self.model.post_process([result])
+                            # 检查是否违规
+                            duration = current_time - track_records[track_id]['first_seen']
+                            if duration >= time_threshold:
+                                track_records[track_id]['violation'] = True
+                                object_name = f"ai/{date_str}/{self.model_name}/{current_timestamp}_{track_id}.jpg"
+                                log_task(
+                                    f"消防通道占用违规 - 任务ID:{self.task_id}, 目标ID:{track_id}, 占用时长:{duration:.1f}秒, 图片:{object_name}")
+                                infer_image = result.plot()
+                                _, _ = self.minio_client.upload_image_array(
+                                    image_array=infer_image,
+                                    object_name=object_name,
+                                    image_format='jpg',
+                                    quality=85
+                                )
 
-                ori_img_shape = result.orig_shape
-                if not results_list:
-                    continue
-                # 分离不同类别的检测结果
-                accident_boxes = []  # class=0 (accident)
-                pedestrian_boxes = []  # class=1 (pedestrian)
+                                # 使用MQTT格式化器构建消防通道占用消息
+                                mqtt_message = MQTTMessageFormatter.format_fire_lane_violation_message(
+                                    object_name=object_name,
+                                    result_item=result_item,
+                                    obj_num=len(result),
+                                    ori_img_shape=ori_img_shape
+                                )
+                                # 发送到MQTT主题: {类别名}
+                                log_task_debug(f"发送MQTT消息 - 任务ID:{self.task_id}, 主题:{self.topic}")
+                                mqtt_success = self.mqtt_client.publish_message(self.topic, mqtt_message)
 
-                for result_item in results_list:
-                    class_name = result_item.get('className', '')
-                    if class_name == 'accident':  # class=0
-                        accident_boxes.append(result_item)
-                    elif class_name == 'pedestria':  # class=1
-                        pedestrian_boxes.append(result_item)
+                    # 更新所有track_id的连续未出现帧数
+                    for track_id in list(track_records.keys()):
+                        if track_id not in current_frame_ids:
+                            consecutive_missing_frames[track_id] += 1
+                            # 如果连续5帧未出现，则从track_records中移除
+                            if consecutive_missing_frames[track_id] >= max_missing_frames:
+                                log_task_debug(
+                                    f"目标移除追踪 - 任务ID:{self.task_id}, 目标ID:{track_id}, 连续{max_missing_frames}帧未检测")
+                                del track_records[track_id]
+                                del consecutive_missing_frames[track_id]
+                        else:
+                            # 重置连续未出现帧数
+                            consecutive_missing_frames[track_id] = 0
 
-                # 如果没有检测到事故，跳过
-                if not accident_boxes:
-                    continue
+            elif self.model_index_3:
+                # 事故检测模型，要补充车辆识别
+                accident_id = []
 
-                # 使用验证管理器获取通过验证的事故
-                verified_indices = self.verification_manager.get_verified_accidents(accident_boxes, pedestrian_boxes)
-                log_task_debug(f"事故验证完成 - 任务ID:{self.task_id}, 总事故数:{len(accident_boxes)}, 验证通过数:{len(verified_indices)}")
+                for result in results:
+                    # 更新最后帧时间（用于健康监控）
+                    self._last_frame_time = time.time()
 
-                # 处理所有通过验证的事故
-                for idx in verified_indices:
-                    result_item = accident_boxes[idx]
+                    # 检查停止请求
+                    accident_time_start = time.time()
+                    if await self.check_stop():
+                        log_task(f"模型3收到停止请求，退出推理循环 - 任务ID:{self.task_id} \n")
+                        self._should_stop = True
+                        break
+
+                    if len(result) == 0:
+                        continue
+                    log_task(f"模型模型推理中")
+
+                    # 后处理检测结果
+                    results_list = self.model.post_process([result])
+
+                    ori_img_shape = result.orig_shape
+                    if not results_list:
+                        continue
+                    # 分离不同类别的检测结果
+                    accident_boxes = []  # class=0 (accident)
+                    pedestrian_boxes = []  # class=1 (pedestrian)
+
+                    for result_item in results_list:
+                        class_name = result_item.get('className', '')
+                        if class_name == 'accident':  # class=0
+                            accident_boxes.append(result_item)
+                        elif class_name == 'pedestria':  # class=1
+                            pedestrian_boxes.append(result_item)
+
+                    # 如果没有检测到事故，跳过
+                    if not accident_boxes:
+                        continue
+
+                    # 使用验证管理器获取通过验证的事故
+                    verified_indices = self.verification_manager.get_verified_accidents(accident_boxes, pedestrian_boxes)
+                    log_task_debug(f"事故验证完成 - 任务ID:{self.task_id}, 总事故数:{len(accident_boxes)}, 验证通过数:{len(verified_indices)}")
+
+                    # 处理所有通过验证的事故
+                    for idx in verified_indices:
+                        result_item = accident_boxes[idx]
+                        current_timestamp = datetime.now(BeiJingTime)
+                        date_str = current_timestamp.strftime("%Y-%m-%d")
+                        timestamp_str = current_timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+                        id = result_item.get('track_id', None)
+                        if id in accident_id:
+                            log_task_debug(f"重复事故事件，跳过上报 - 任务ID:{self.task_id}, 事件ID:{id}")
+                            continue
+
+                        log_task(f"检测到验证后的真实事故 - 任务ID:{self.task_id}, 事件ID:{id}")
+                        object_name = f"ai/{date_str}/{self.model_name}/{current_timestamp}_{id}.jpg"
+                        log_task_debug(f"事故图片保存路径 - 任务ID:{self.task_id}, 路径:{object_name}")
+                        accident_id.append(id)
+
+                        # 事故车辆数量识别
+                        car_time_start = time.time()
+                        car_result = await reasoner_single.infer_image(result.orig_img, 5, post_msg=False)
+                        accident_obb = [result_item['x'], result_item['y'], result_item['width'],
+                                      result_item['height'], result_item['rotation']]
+
+                        if len(car_result[0]) == 0:  # 没有识别到车辆
+                            log_task_debug(f"事故现场无车辆，跳过上报 - 任务ID:{self.task_id}, 事件ID:{id}")
+                            continue
+
+                        car_result_obb = car_result[0].obb.xyxyxyxy.tolist()
+                        inter_index = GeometryUtils.intersection_judgment(accident_obb, car_result_obb)
+                        accident_car = len(inter_index)
+
+                        if accident_car == 0:
+                            log_task_debug(f"事故现场无车辆，跳过上报 - 任务ID:{self.task_id}, 事件ID:{id}")
+                            continue
+
+                        accident_obb_list = [car_result_obb[i] for i in inter_index]
+                        # 转换格式：[[x,y],[x,y],[x,y],[x,y]] -> [x,y,x,y,x,y,x,y]
+                        accident_obb_list = [[coord for point in shape for coord in point] for shape in accident_obb_list]
+
+                        car_time_end = time.time()
+                        result_item['accident_car_count'] = accident_car
+                        result_item['accident_car_xyxy'] = accident_obb_list
+                        log_task_debug(f"事故车辆识别完成 - 任务ID:{self.task_id}, 事件ID:{id}, 车辆数:{accident_car}, 耗时:{car_time_end - car_time_start:.3f}秒")
+
+                        # VLM 多模态验证
+                        if self.vlm_verifier and self.vlm_verifier.enabled:
+                            vlm_start_time = time.time()
+                            # 使用绘制了事故框的图片进行验证，帮助大模型聚焦
+                            vlm_image = self.verification_manager.plot_verified_accidents_only(result, [result_item])
+                            is_confirmed = self.vlm_verifier.verify_accident(vlm_image)
+
+                            log_task_debug(f"VLM验证结果: {is_confirmed}, 耗时:{time.time() - vlm_start_time:.3f}秒")
+
+                            if not is_confirmed:
+                                log_task(f"VLM未确认事故，跳过上报 - 任务ID:{self.task_id}, 事件ID:{id}")
+                                continue
+
+                        # 保存和上报事故信息
+                        await self._save_and_publish_accident(result, result_item, object_name, ori_img_shape, timestamp_str)
+                    accident_time_end = time.time()
+                    log_task_debug(
+                        f"事故检测处理完成 - 任务ID:{self.task_id}, 总耗时:{accident_time_end - accident_time_start:.3f}秒")
+
+            else:
+                # 其他模型，简单逻辑识别即告警
+                type_id = []
+                for result in results:
+                    # 更新最后帧时间（用于健康监控）
+                    self._last_frame_time = time.time()
+
+                    print("视频正常推理")
                     current_timestamp = datetime.now(BeiJingTime)
                     date_str = current_timestamp.strftime("%Y-%m-%d")
                     timestamp_str = current_timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")
+                    # 检查停止请求
+                    if await self.check_stop():
+                        log_task(f"其他模型收到停止请求，退出推理循环 - 任务ID:{self.task_id}")
+                        self._should_stop = True
+                        break
 
-                    id = result_item.get('track_id', None)
-                    if id in accident_id:
-                        log_task_debug(f"重复事故事件，跳过上报 - 任务ID:{self.task_id}, 事件ID:{id}")
-                        continue
-
-                    log_task(f"检测到验证后的真实事故 - 任务ID:{self.task_id}, 事件ID:{id}")
-                    object_name = f"ai/{date_str}/{self.model_name}/{current_timestamp}_{id}.jpg"
-                    log_task_debug(f"事故图片保存路径 - 任务ID:{self.task_id}, 路径:{object_name}")
-                    accident_id.append(id)
-
-                    # 事故车辆数量识别
-                    car_time_start = time.time()
-                    car_result = await reasoner_single.infer_image(result.orig_img, 5, post_msg=False)
-                    accident_obb = [result_item['x'], result_item['y'], result_item['width'],
-                                  result_item['height'], result_item['rotation']]
-
-                    if len(car_result[0]) == 0:  # 没有识别到车辆
-                        log_task_debug(f"事故现场无车辆，跳过上报 - 任务ID:{self.task_id}, 事件ID:{id}")
-                        continue
-
-                    car_result_obb = car_result[0].obb.xyxyxyxy.tolist()
-                    inter_index = GeometryUtils.intersection_judgment(accident_obb, car_result_obb)
-                    accident_car = len(inter_index)
-
-                    if accident_car == 0:
-                        log_task_debug(f"事故现场无车辆，跳过上报 - 任务ID:{self.task_id}, 事件ID:{id}")
-                        continue
-
-                    accident_obb_list = [car_result_obb[i] for i in inter_index]
-                    # 转换格式：[[x,y],[x,y],[x,y],[x,y]] -> [x,y,x,y,x,y,x,y]
-                    accident_obb_list = [[coord for point in shape for coord in point] for shape in accident_obb_list]
-
-                    car_time_end = time.time()
-                    result_item['accident_car_count'] = accident_car
-                    result_item['accident_car_xyxy'] = accident_obb_list
-                    log_task_debug(f"事故车辆识别完成 - 任务ID:{self.task_id}, 事件ID:{id}, 车辆数:{accident_car}, 耗时:{car_time_end - car_time_start:.3f}秒")
-
-                    # VLM 多模态验证
-                    if self.vlm_verifier and self.vlm_verifier.enabled:
-                        vlm_start_time = time.time()
-                        # 使用绘制了事故框的图片进行验证，帮助大模型聚焦
-                        vlm_image = self.verification_manager.plot_verified_accidents_only(result, [result_item])
-                        is_confirmed = self.vlm_verifier.verify_accident(vlm_image)
-                        
-                        log_task_debug(f"VLM验证结果: {is_confirmed}, 耗时:{time.time() - vlm_start_time:.3f}秒")
-                        
-                        if not is_confirmed:
-                            log_task(f"VLM未确认事故，跳过上报 - 任务ID:{self.task_id}, 事件ID:{id}")
+                    ori_img_shape = result.orig_shape
+                    results_dict = self.model.post_process([result])
+                    for result_item in results_dict:
+                        id = result_item.get('track_id', None)
+                        # 过滤掉 track_id 为 "unknown" 的消息（追踪器未初始化）
+                        if id == "unknown":
+                            log_task_debug(f"跳过未初始化的track_id - 任务ID:{self.task_id}, 目标ID:{id}")
                             continue
+                        # 唯一性判别，模型2，6不需要进行唯一性判别
+                        print("--------视频推理中------")
+                        if id in type_id:
+                        # if id in type_id and self.model_index not in [2,6]:
+                            log_task_debug(f"重复事故事件，跳过上报 - 任务ID:{self.task_id}, 事件ID:{id}")
+                            continue
+                        object_name = f"ai/{date_str}/{self.model_name}/{current_timestamp}_{id}.jpg"
+                        log_task(f"检测到目标 - 任务ID:{self.task_id}, 目标ID:{id}, 图片:{object_name}")
+                        type_id.append(id)
+                        infer_image = result.plot()
+                        _, _ = self.minio_client.upload_image_array(
+                            image_array=infer_image,
+                            object_name=object_name,
+                            image_format='jpg',
+                            quality=85
+                        )
+                        # 使用MQTT格式化器构建通用检测消息
+                        mqtt_message = MQTTMessageFormatter.format_general_detection_message(
+                            object_name=object_name,
+                            result_item=result_item,
+                            obj_num=len(result),
+                            ori_img_shape=ori_img_shape,
+                            task_id=self.task_id,
+                            timestamp_str=timestamp_str
+                        )
 
-                    # 保存和上报事故信息
-                    await self._save_and_publish_accident(result, result_item, object_name, ori_img_shape, timestamp_str)
-                accident_time_end = time.time()
-                log_task_debug(
-                    f"事故检测处理完成 - 任务ID:{self.task_id}, 总耗时:{accident_time_end - accident_time_start:.3f}秒")
+                        # 发送到MQTT主题: {类别名}
+                        log_task_debug(f"发送MQTT消息 - 任务ID:{self.task_id}, 目标ID:{id}, 主题:{self.topic}")
+                        print(mqtt_message)
+                        mqtt_success = self.mqtt_client.publish_message(self.topic, mqtt_message)
 
-        else:
-            # 其他模型，简单逻辑识别即告警
-            type_id = []
-            for result in results:
-                # 更新最后帧时间（用于健康监控）
-                self._last_frame_time = time.time()
-                
-                print("视频正常推理")
-                current_timestamp = datetime.now(BeiJingTime)
-                date_str = current_timestamp.strftime("%Y-%m-%d")
-                timestamp_str = current_timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")
-                # 检查停止请求
-                if await self.check_stop():
-                    log_task(f"其他模型收到停止请求，退出推理循环 - 任务ID:{self.task_id}")
-                    self._should_stop = True
-                    return
+            # 视频推理正常完成，停止健康监控
+            log_task(f"视频推理正常完成 - 任务ID:{self.task_id}")
+            self._should_stop = True
 
-                ori_img_shape = result.orig_shape
-                results_dict = self.model.post_process([result])
-                for result_item in results_dict:
-                    id = result_item.get('track_id', None)
-                    # 过滤掉 track_id 为 "unknown" 的消息（追踪器未初始化）
-                    if id == "unknown":
-                        log_task_debug(f"跳过未初始化的track_id - 任务ID:{self.task_id}, 目标ID:{id}")
-                        continue
-                    # 唯一性判别，模型2，6不需要进行唯一性判别
-                    print("--------视频推理中------")
-                    if id in type_id:
-                    # if id in type_id and self.model_index not in [2,6]:
-                        log_task_debug(f"重复事故事件，跳过上报 - 任务ID:{self.task_id}, 事件ID:{id}")
-                        continue
-                    object_name = f"ai/{date_str}/{self.model_name}/{current_timestamp}_{id}.jpg"
-                    log_task(f"检测到目标 - 任务ID:{self.task_id}, 目标ID:{id}, 图片:{object_name}")
-                    type_id.append(id)
-                    infer_image = result.plot()
-                    _, _ = self.minio_client.upload_image_array(
-                        image_array=infer_image,
-                        object_name=object_name,
-                        image_format='jpg',
-                        quality=85
-                    )
-                    # 使用MQTT格式化器构建通用检测消息
-                    mqtt_message = MQTTMessageFormatter.format_general_detection_message(
-                        object_name=object_name,
-                        result_item=result_item,
-                        obj_num=len(result),
-                        ori_img_shape=ori_img_shape,
-                        task_id=self.task_id,
-                        timestamp_str=timestamp_str
-                    )
+        except Exception as e:
+            log_task_error(f"视频推理任务失败 - 任务ID:{self.task_id}, 错误:{str(e)}")
+            self._should_stop = True
+            raise e
+        finally:
+            # 确保资源清理在所有情况下都会执行
+            log_task_debug(f"开始清理推理任务资源 - 任务ID:{self.task_id}")
 
-                    # 发送到MQTT主题: {类别名}
-                    log_task_debug(f"发送MQTT消息 - 任务ID:{self.task_id}, 目标ID:{id}, 主题:{self.topic}")
-                    print(mqtt_message)
-                    mqtt_success = self.mqtt_client.publish_message(self.topic, mqtt_message)
+            # 确保监控线程被正确清理
+            if self._monitor_started:
+                log_task_debug(f"清理监控线程 - 任务ID:{self.task_id}")
+                self._stop_monitor_thread()
 
-        # 视频推理正常完成，停止健康监控
-        log_task(f"视频推理正常完成 - 任务ID:{self.task_id}")
-        self._should_stop = True
+            # 断开MQTT连接
+            try:
+                self.mqtt_client.disconnect()
+                log_task_debug(f"MQTT连接已断开 - 任务ID:{self.task_id}")
+            except Exception as e:
+                log_task_error(f"断开MQTT连接失败 - 任务ID:{self.task_id}, 错误:{str(e)}")
+
+            log_task_debug(f"推理任务资源清理完成 - 任务ID:{self.task_id}")
 

@@ -9,6 +9,9 @@ model:
     class_path: "model_library.model.base_model.BaseModel"
     classes: [0]
     imgsz: 1  # 1 代表模型采用原图大小
+    # GPU配置
+    estimated_memory: 800  # 预估显存需求(MB)
+    preferred_gpu: null    # 优先GPU ID，null表示自动分配
 
   1:
     model_name: "fire_lane_blockage"
@@ -17,6 +20,9 @@ model:
     model_path: "weight/fire_lane_blockage.pt"  # 消防通道占用
     time_threshold: 60  # 消防通道占用时间阈值
     imgsz: 1  # 1 代表模型采用原图大小
+    # GPU配置
+    estimated_memory: 1200  # 预估显存需求(MB)
+    preferred_gpu: null    # 优先GPU ID，null表示自动分配
 
   2:
     model_name: "fire_detect"
@@ -113,16 +119,19 @@ model:
     classes: [0]
     imgsz: 0  # 修改为0以支持SAHI切片推理
     enable_tracking: true  # 是否启用跟踪（批量图片处理建议关闭）
+    # GPU配置
+    estimated_memory: 2500  # 预估显存需求(MB)，SAHI算法需要更多显存
+    preferred_gpu: null    # 优先GPU ID，null表示自动分配
     # SAHI配置（可选）
     enable_sahi: true  # 是否启用SAHI切片推理
     sahi_config:
       initial_confidence: 0.7  # SAHI初始检测置信度，红外检测可以适当调高
       device: null  # 自动选择设备，可指定"cuda:0"或"cpu"
       slice_params:  # 可选的自定义切片参数，如为空则自动确定
-        slice_height: 640
-        slice_width: 640
-        overlap_height_ratio: 0.2
-        overlap_width_ratio: 0.2
+        slice_height: 928
+        slice_width: 928
+        overlap_height_ratio: 0.25
+        overlap_width_ratio: 0.25
 
   7:
     model_name: "face_detect"

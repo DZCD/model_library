@@ -11,8 +11,8 @@ device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
 
 class CarModel(BaseModel):
-    def __init__(self, model_path):
-        super().__init__(model_path)
+    def __init__(self, model_path, model_index: int = None, estimated_memory: int = 900, device_override: str = None):
+        super().__init__(model_path, model_index, estimated_memory, device_override)
 
     def detect_image(self, source, conf=0.5, stream=False, classes: list = None, imgsz: tuple = (640, 640),
                      verbose: bool = True, half=True, cv_obb=True):

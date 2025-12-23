@@ -3,9 +3,12 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import time
 import json
+import asyncio
+import threading
 from urllib.parse import parse_qs
 from model_library.router.config import config_router
-from model_library.router.infer import router as infer_router
+from model_library.router.infer import router as infer_router, cleanup_completed_tasks
+from model_library.router.gpu_router import router as gpu_router
 from model_library.tools import log_api_complete
 
 # API标签元数据配置
@@ -266,6 +269,62 @@ app.add_middleware(
 
 app.include_router(config_router, prefix="/ai_model")
 app.include_router(infer_router,prefix="/ai_model")
+app.include_router(gpu_router,prefix="/ai_model")
+
+
+# 后台自动清理任务
+async def periodic_cleanup():
+    """定期清理已完成的推理任务"""
+    cleanup_interval = 1800  # 30分钟清理一次
+
+    while True:
+        try:
+            await asyncio.sleep(cleanup_interval)
+
+            # 执行清理
+            result = await cleanup_completed_tasks()
+
+            if result.get("status") == "succeed":
+                total_cleaned = result["data"]["total_cleaned"]
+                remaining = result["data"]["remaining_tasks"]
+                if total_cleaned > 0:
+                    print(f"[自动清理] 清理了 {total_cleaned} 个任务，剩余 {remaining} 个任务")
+            else:
+                print(f"[自动清理] 清理失败: {result.get('msg')}")
+
+        except Exception as e:
+            print(f"[自动清理] 异常: {str(e)}")
+            # 出错时等待较短时间后重试
+            await asyncio.sleep(300)  # 5分钟后重试
+
+
+def start_background_cleanup():
+    """启动后台清理任务"""
+    async def run_cleanup():
+        # 等待应用启动完成后开始清理任务
+        await asyncio.sleep(60)  # 启动1分钟后开始第一次清理
+        await periodic_cleanup()
+
+    def run_in_thread():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(run_cleanup())
+        except Exception as e:
+            print(f"后台清理线程异常: {e}")
+        finally:
+            loop.close()
+
+    cleanup_thread = threading.Thread(target=run_in_thread, daemon=True)
+    cleanup_thread.start()
+    print("后台自动清理任务已启动 (每30分钟清理一次)")
+
+
+# 在应用启动时启动后台清理任务
+@app.on_event("startup")
+async def startup_event():
+    """应用启动事件"""
+    start_background_cleanup()
 
 
 if __name__ == "__main__":
