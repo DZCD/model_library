@@ -75,6 +75,7 @@ class ModelLoader:
             5: 900,   # car - 小模型
             6: 2500,  # infrared - 大模型+SAHI
             7: 700,   # face_detect - 小模型
+            8: 2500,  # infrared_motorcycle - 夜间红外摩托车检测（大模型+SAHI+追踪）
         }
         return model_memory_map.get(model_index, 1000)  # 默认1GB
 

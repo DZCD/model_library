@@ -21,6 +21,7 @@ from .rtmp_config import auto_rtmp_config
 from .mqtt_formatter import MQTTMessageFormatter
 from .accident_strategies import GeometryUtils
 from .resource_cleanup import resource_cleanup_manager
+from .motorcycle_gathering_strategies import MotorcycleGatheringStrategyFactory
 
 BeiJingTime = ZoneInfo("Asia/Shanghai")
 
@@ -51,7 +52,7 @@ class Detector:
         # 初始化事故验证管理器（仅用于模型3）
         self.verification_manager = None
         self.model_index_3 = self.model_index == 3
-        
+
         # 初始化 VLM 验证器 (仅用于模型3)
         self.vlm_verifier = None
         if self.model_index_3:
@@ -59,6 +60,10 @@ class Detector:
             vlm_config = model_config.get('vlm_verification', {})
             global_ms_conf = self.config.config.get('modelscope', {})
             self.vlm_verifier = VLMVerifier(vlm_config, global_ms_conf)
+
+        # 初始化摩托车聚集检测管理器（仅用于模型8）
+        self.gathering_manager = None
+        self.model_index_8 = self.model_index == 8
 
         log_task_debug(f"获取模型实例 - 任务ID:{task_id}, 模型:{self.model_name}")
         self.model = model_manager.get_model(self.model_index, task_id)
@@ -68,6 +73,15 @@ class Detector:
             self.verification_manager = AccidentStrategyFactory.create_complete_accident_system(
                 self.model_index, self.config, self.model, task_id
             )
+
+        # 在模型加载后初始化完整的摩托车聚集检测系统（仅用于模型8）
+        if self.model_index_8:
+            self.gathering_manager = MotorcycleGatheringStrategyFactory.create_complete_gathering_system(
+                self.model_index, self.config, task_id
+            )
+            # 将聚集检测管理器设置到模型中
+            if hasattr(self.model, 'set_gathering_manager'):
+                self.model.set_gathering_manager(self.gathering_manager)
 
         log_task(f"检测器初始化完成 - 任务ID:{task_id}, 模型:{self.model_name}, MQTT主题:{self.topic}")
 
@@ -583,6 +597,71 @@ class Detector:
                     accident_time_end = time.time()
                     log_task_debug(
                         f"事故检测处理完成 - 任务ID:{self.task_id}, 总耗时:{accident_time_end - accident_time_start:.3f}秒")
+
+            elif self.model_index_8:
+                # 夜间红外摩托车飙车检测模型 - 持续追踪上报（帧级别，多目标在一条消息中）
+                for result in results:
+                    # 更新最后帧时间（用于健康监控）
+                    self._last_frame_time = time.time()
+
+                    # 检查停止请求
+                    if await self.check_stop():
+                        log_task(f"模型8收到停止请求，退出推理循环 - 任务ID:{self.task_id} \n")
+                        self._should_stop = True
+                        break
+
+                    if len(result) == 0:
+                        continue
+
+                    # 每次推理都输出日志（与Model 3保持一致）
+                    log_task(f"模型8推理中")
+
+                    # 使用模型的帧级别聚集检测方法
+                    current_timestamp = datetime.now().timestamp()
+                    frame_report = self.model.detect_gathering_and_get_frame_report(
+                        result, current_timestamp
+                    )
+
+                    # 如果没有飙车或者没有需要上报的目标，跳过
+                    if not frame_report['has_new_reports'] or frame_report['racing_count'] == 0:
+                        continue
+
+                    # 构建时间戳
+                    current_dt = datetime.fromtimestamp(frame_report['timestamp'], BeiJingTime)
+                    date_str = current_dt.strftime("%Y-%m-%d")
+                    timestamp_str = current_dt.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+                    # 生成文件名（使用时间戳而不是track_id）
+                    object_name = f"ai/{date_str}/{self.model_name}/{current_dt}.jpg"
+
+                    gathering_count = frame_report['gathering_count']
+                    racing_count = frame_report['racing_count']
+                    tracking_infos = frame_report['tracking_infos']
+
+                    log_task(f"检测到夜间飙车并上报 - 任务ID:{self.task_id}, 聚集数量:{gathering_count}, 飙车数量:{racing_count}, 追踪目标数:{len(tracking_infos)}")
+
+                    # 绘制检测框并上传图片
+                    infer_image = result.plot()
+                    _, _ = self.minio_client.upload_image_array(
+                        image_array=infer_image,
+                        object_name=object_name,
+                        image_format='jpg',
+                        quality=85
+                    )
+
+                    # 使用MQTT格式化器构建摩托车追踪消息（包含所有目标）
+                    mqtt_message = MQTTMessageFormatter.format_motorcycle_frame_message(
+                        object_name=object_name,
+                        frame_report=frame_report,
+                        ori_img_shape=result.orig_shape,
+                        task_id=self.task_id,
+                        timestamp_str=timestamp_str
+                    )
+
+                    # 发送到MQTT主题
+                    log_task_debug(f"发送MQTT消息 - 任务ID:{self.task_id}, 聚集数量:{gathering_count}, 主题:{self.topic}")
+                    print(mqtt_message)
+                    mqtt_success = self.mqtt_client.publish_message(self.topic, mqtt_message)
 
             else:
                 # 其他模型，简单逻辑识别即告警
